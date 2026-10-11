@@ -61,6 +61,56 @@ function assertItemStatus(status, itemName, itemId) {
   }
 }
 
+function diagnosticText(value, token) {
+  if (typeof value !== 'string') return '';
+  let text = value;
+  const encoded = [encodeURI(token), encodeURIComponent(token)];
+  for (const secret of new Set([token, ...encoded, ...encoded.map((value) => value.replace(/%[a-f\d]{2}/gi, (escape) => escape.toLowerCase()))])) {
+    if (secret) text = text.split(secret).join('[REDACTED]');
+  }
+  text = text.replace(/\b(?:https?|file|chrome-extension)(?::\/\/|%3a%2f%2f)[^\s"'<>]+/gi, '[URL omitted]');
+  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email omitted]');
+  // Header and credential assignments can contain spaces or multiple Cookie values; omit the whole line.
+  text = text.split(/[\r\n\u2028\u2029]+/).map((line) => (
+    /["']?\b(?:set-cookie|cookie|authorization)["']?\s*[:=]|\bbearer\s+\S|["']?\b[\w-]*(?:token|secret|password|credential|key)["']?\s*[:=]/i.test(line)
+      ? '[credential-bearing diagnostic omitted]'
+      : line
+  )).join(' ');
+  return text.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+}
+
+function errorDiagnostic(error, token) {
+  const messages = [diagnosticText(error?.message, token)];
+  const add = (label, item, fields) => {
+    const text = fields.map((field) => diagnosticText(item?.[field], token)).filter(Boolean).join(': ');
+    if (text) messages.push(`${label}: ${text}`);
+  };
+  const details = Array.isArray(error?.details) ? error.details.slice(0, 10) : [];
+  for (const detail of details) {
+    const type = typeof detail?.['@type'] === 'string' ? detail['@type'].split('/').at(-1) : '';
+    if (type === 'google.rpc.ErrorInfo') {
+      add('ErrorInfo', detail, ['reason', 'domain']);
+    } else if (type === 'google.rpc.BadRequest') {
+      for (const violation of Array.isArray(detail.fieldViolations) ? detail.fieldViolations.slice(0, 10) : []) {
+        add('BadRequest', violation, ['field', 'reason', 'description']);
+      }
+    } else if (type === 'google.rpc.PreconditionFailure') {
+      for (const violation of Array.isArray(detail.violations) ? detail.violations.slice(0, 10) : []) {
+        add('PreconditionFailure', violation, ['type', 'description']);
+      }
+    } else if (type === 'google.rpc.LocalizedMessage') {
+      add('LocalizedMessage', detail, ['message']);
+    } else if (type === 'WarningsInfo' || type.endsWith('.WarningsInfo')) {
+      for (const warning of Array.isArray(detail.warnings) ? detail.warnings.slice(0, 10) : []) {
+        add('Warning', warning, ['reason', 'description']);
+      }
+    } else {
+      messages.push('Unsupported error detail omitted');
+    }
+  }
+  return messages.filter(Boolean).join('; ').slice(0, 6000);
+}
+
 async function requestJson(path, { token, method = 'GET', body, signal } = {}) {
   let response;
   try {
@@ -86,8 +136,10 @@ async function requestJson(path, { token, method = 'GET', body, signal } = {}) {
     throw new Error(`Chrome Web Store ${method} returned invalid JSON (HTTP ${response.status})`);
   }
   if (!response.ok || result?.error) {
-    const code = typeof result?.error?.status === 'string' ? `, ${result.error.status}` : '';
-    throw new Error(`Chrome Web Store ${method} failed (HTTP ${response.status}${code})`);
+    const status = diagnosticText(result?.error?.status, token);
+    const code = /^[A-Z][A-Z0-9_]{0,63}$/.test(status) ? `, ${status}` : '';
+    const diagnostic = errorDiagnostic(result?.error, token);
+    throw new Error(`Chrome Web Store ${method} failed (HTTP ${response.status}${code})${diagnostic ? `: ${diagnostic}` : ''}`);
   }
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     throw new Error(`Chrome Web Store ${method} returned an invalid response`);

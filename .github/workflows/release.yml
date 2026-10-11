@@ -6,6 +6,11 @@ on:
     paths:
       - extension/manifest.json
   workflow_dispatch:
+    inputs:
+      submit_existing_release:
+        description: Submit the existing GitHub Release after verifying every asset matches
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,22 +76,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.value }}
+          SUBMIT_EXISTING_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.submit_existing_release || false }}
         run: |
           set -euo pipefail
           tag="v${VERSION}"
           tag_refs="$(git ls-remote origin "refs/tags/${tag}" "refs/tags/${tag}^{}")"
           tag_sha="$(printf '%s\n' "$tag_refs" | awk -v ref="refs/tags/${tag}" '$2 == ref "^{}" { peeled = $1 } $2 == ref { direct = $1 } END { if (peeled != "") print peeled; else if (direct != "") print direct }')"
-          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
+          if [[ "$SUBMIT_EXISTING_RELEASE" == "true" && -z "$tag_sha" ]]; then
+            echo "::error::No existing tag for ${tag}"
+            exit 1
+          fi
+          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" && "$SUBMIT_EXISTING_RELEASE" != "true" ]]; then
             echo "::error::Tag ${tag} already points to a different commit"
             exit 1
           fi
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if [[ -z "$tag_sha" || "$tag_sha" != "$GITHUB_SHA" ]]; then
+            if [[ "$SUBMIT_EXISTING_RELEASE" != "true" && ( -z "$tag_sha" || "$tag_sha" != "$GITHUB_SHA" ) ]]; then
               echo "::error::Existing release ${tag} is not anchored to this workflow commit"
               exit 1
             fi
+            if [[ "$SUBMIT_EXISTING_RELEASE" == "true" ]]; then
+              gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease | jq -e '.isDraft == false and .isPrerelease == false' >/dev/null
+            fi
           else
+            if [[ "$SUBMIT_EXISTING_RELEASE" == "true" ]]; then
+              echo "::error::No published GitHub Release for ${tag}"
+              exit 1
+            fi
             gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
@@ -109,6 +126,10 @@ jobs:
                 exit 1
               fi
             else
+              if [[ "$SUBMIT_EXISTING_RELEASE" == "true" ]]; then
+                echo "::error::Existing release asset ${name} is missing"
+                exit 1
+              fi
               gh release upload "$tag" --repo "$GITHUB_REPOSITORY" "$asset"
             fi
           done
