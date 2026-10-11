@@ -139,7 +139,9 @@ npm run release:package
 - `weixin-channels-video-skill-v<版本>.zip`
 - `SHA256SUMS`
 
-更新版本时同步 `package.json` 和 lockfile 的包版本。合并包含 manifest 变更的提交到 main 后，Release 工作流先执行仓库检查，再创建对应提交的 GitHub Release，并将扩展上传 Chrome Web Store 送审；审核通过后自动上线。也可从 main 手动运行工作流。相同版本的 Release 只允许复用同一提交，已有资产不会被覆盖；商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。
+更新版本时同步 `package.json` 和 lockfile 的包版本。合并包含 manifest 变更的提交到 main 后，Release 工作流先执行仓库检查，再创建对应提交的 GitHub Release，并将扩展上传 Chrome Web Store 送审；审核通过后自动上线。也可从 main 手动运行工作流。默认模式要求相同版本的 Release 复用同一提交，已有资产不会被覆盖；商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。
+
+已有 GitHub Release、商店提交因前一版本审核或校验失败而中止时，在 main 手动运行 Release 并启用 `submit_existing_release`。该模式使用当前 manifest 版本，要求正式 Release 和全部资产已存在，重新构建的三个归档及 `SHA256SUMS` 必须与已发布资产逐字节相同，之后才向商店提交。它允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
 商店条目 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`；审核上线后可从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。工作流成功表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
 
