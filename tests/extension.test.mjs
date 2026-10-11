@@ -595,6 +595,27 @@ test("background feed bridge accepts only the exact extension index page", async
   });
 });
 
+test("background accepts a pairing sender whose index page URL still carries the connect fragment", async () => {
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  await withBackgroundHarness({}, async ({ extensionId, send, ports }) => {
+    const withFragment = {
+      id: extensionId,
+      frameId: 0,
+      url: `chrome-extension://${extensionId}/index.html#agent-connect=${sessionId}`,
+    };
+    assert.deepEqual(await send({ type: "weixin-channels-video:pair", sessionId }, withFragment), { ok: true });
+    assert.equal(ports.length, 1);
+
+    const wrongPage = {
+      id: extensionId,
+      frameId: 0,
+      url: `chrome-extension://${extensionId}/other.html#agent-connect=${sessionId}`,
+    };
+    assert.equal(await send({ type: "weixin-channels-video:pair", sessionId }, wrongPage), undefined);
+    assert.equal(ports.length, 1);
+  });
+});
+
 test("download filenames are safe and existing files are uniquified", async () => {
   let options;
   const chromeApi = {

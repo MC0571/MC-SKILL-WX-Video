@@ -64,6 +64,14 @@ function isAllowedFeedSender(sender) {
   return sender?.url === chrome.runtime.getURL("index.html");
 }
 
+// The pairing page is opened with a "#agent-connect=" fragment, and Chrome reports that
+// fragment in sender.url even after the page strips it with history.replaceState.
+function isIndexPageUrl(value) {
+  if (typeof value !== "string") return false;
+  const fragment = value.indexOf("#");
+  return (fragment === -1 ? value : value.slice(0, fragment)) === chrome.runtime.getURL("index.html");
+}
+
 function validateFeedRequest(message) {
   if (
     !hasExactKeys(message, ["type", "url", "referer", "body"]) ||
@@ -217,7 +225,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (
       sender?.id !== chrome.runtime.id ||
       sender.frameId !== 0 ||
-      sender.url !== chrome.runtime.getURL("index.html") ||
+      !isIndexPageUrl(sender.url) ||
       !hasExactKeys(message, ["type", "sessionId"]) ||
       typeof message.sessionId !== "string" ||
       !SESSION_ID_PATTERN.test(message.sessionId)
