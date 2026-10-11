@@ -89,7 +89,9 @@ test('runner rejects path traversal, links, duplicate portable names, and malfor
   assert.throws(() => parseSkillArchive(gzipSync(brokenEnd)), /Skill TAR 包结束标记无效/);
 });
 
-test('runner rejects files and symlinks where the application cache directory must be', async () => {
+test('runner rejects files and symlinks where the application cache directory must be', {
+  skip: process.platform !== 'darwin' && process.platform !== 'win32',
+}, async () => {
   const home = await mkdtemp(join(tmpdir(), 'skill-runtime-cache-boundary-'));
   const originalHome = process.env.HOME;
   const originalLocalAppData = process.env.LOCALAPPDATA;
@@ -109,7 +111,7 @@ test('runner rejects files and symlinks where the application cache directory mu
     await rm(appCacheRoot);
     const target = join(home, 'cache-target');
     await mkdir(target);
-    await symlink(target, appCacheRoot);
+    await symlink(target, appCacheRoot, process.platform === 'win32' ? 'junction' : undefined);
     await assert.rejects(runtime.run(['status']), /运行资源缓存目录不安全/);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;

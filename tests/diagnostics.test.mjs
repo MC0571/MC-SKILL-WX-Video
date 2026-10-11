@@ -6,7 +6,7 @@ import test from "node:test";
 import { BridgeError } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
 import { diagnoseEnvironment, inspectChromeInstallation, inspectChromeRunning, launchChrome } from "../skills/weixin-channels-video/scripts/diagnostics.mjs";
 import { inspectChromeProfile } from "../skills/weixin-channels-video/scripts/chrome-profile.mjs";
-import { inspectBridgeComponents } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
+import { installBridge, inspectBridgeComponents } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
 import { runCli } from "../skills/weixin-channels-video/scripts/cli.mjs";
 
 const EXTENSION_ID = "a".repeat(32);
@@ -366,15 +366,60 @@ test("profile-less diagnosis repairs bridge prerequisites before requesting manu
     const result = await diagnoseEnvironment({
       configuration: "configured",
       config: { extensionId: EXTENSION_ID, appSupportDir: "/private/bridge" },
+      sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
     }, {
       inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
       inspectBridge: async () => ({ ...base, ...override }),
+      bridgeWait: async () => { throw new BridgeError("BRIDGE_TIMEOUT", "ignored"); },
     });
     assert.equal(result.nextAction, expected, JSON.stringify(override));
     if (expected !== "complete_manual_extension_pairing") {
       assert.equal(result.actions.includes("complete_manual_extension_pairing"), false);
     }
   }
+  const windowsUnknownSecurity = await diagnoseEnvironment({
+    configuration: "configured",
+    config: { extensionId: EXTENSION_ID, appSupportDir: "C:\\private\\bridge" },
+  }, {
+    platform: "win32",
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({ ...base, security: "unknown" }),
+  });
+  assert.equal(windowsUnknownSecurity.nextAction, "inspect_chrome_extension_and_bridge_manually");
+});
+
+test("macOS bridge inspection permits manual pairing when Windows-only security is unknown", { skip: process.platform !== "darwin" }, async () => {
+  await withChromeProfile(async ({ root, userDataDir }) => {
+    const appSupportDir = join(root, "bridge");
+    const registryDir = join(root, "NativeMessagingHosts");
+    const nativeHostSource = join(root, "native-host.mjs");
+    await writeFile(nativeHostSource, "// test native host\n");
+    const installed = await installBridge({
+      extensionId: EXTENSION_ID,
+      appSupportDir,
+      chromeUserDataDir: userDataDir,
+      registryDir,
+      nodeExecutable: process.execPath,
+      nativeHostSource,
+      platform: "darwin",
+    });
+    const bridge = await inspectBridgeComponents(installed.config, { registryDir });
+    assert.deepEqual(bridge, {
+      registration: "valid",
+      host: "present",
+      launcher: "valid",
+      node: "available",
+      nodeVersion: process.versions.node,
+      session: "available",
+      security: "unknown",
+    });
+    const result = await diagnoseEnvironment({ configuration: "configured", config: installed.config }, {
+      platform: "darwin",
+      inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+      inspectBridge: (config) => inspectBridgeComponents(config, { registryDir }),
+    });
+    assert.equal(result.nextAction, "complete_manual_extension_pairing");
+  });
 });
 
 test("diagnosis recommends bridge repair when Windows private-path security is invalid", async () => {

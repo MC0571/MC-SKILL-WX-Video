@@ -210,7 +210,7 @@ export async function launchChrome(config, sessionId, {
   }
 }
 
-function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, candidateAction }) {
+function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, platform, candidateAction }) {
   if (connection.state === "connected") return [];
   const actions = [];
   if (chrome.installation === "not_installed") actions.push("install_chrome_after_user_approval");
@@ -234,7 +234,7 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
   if (configuration === "configured" && !config?.profileDirectory) {
     if (actions.length) return [...new Set(actions)];
     return bridge.registration === "valid" && bridge.host === "present" && bridge.launcher === "valid" &&
-      bridge.node === "available" && bridge.session === "available" && bridge.security === "valid"
+      bridge.node === "available" && bridge.session === "available" && (platform !== "win32" || bridge.security === "valid")
       ? ["complete_manual_extension_pairing"]
       : ["inspect_chrome_extension_and_bridge_manually"];
   }
@@ -420,6 +420,7 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
     ...result,
     configuration: result.configuration,
     config,
+    platform,
     candidateAction: result.candidate?.nextAction,
   });
   result.nextAction = result.actions[0];
