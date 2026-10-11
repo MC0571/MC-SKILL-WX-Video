@@ -1,6 +1,6 @@
 # Agent 安装与本地运行边界
 
-本文记录截至 **2026-10-10** 查阅的官方资料。每个 Agent 的产品、运行环境和权限不同；安装前识别当前 Agent 实际运行的位置、系统、Shell、架构，以及它能否访问目标 Chrome。图标、账号名称和来源提示词中的扩展 ID 都不能证明这些事实。
+本文记录截至 **2026-10-10** 查阅的官方资料。每个 Agent 的产品、运行环境和权限不同；安装前识别当前 Agent 实际运行的位置、系统、Shell、架构，以及它能否访问目标 Chrome。图标、账号名称和提示词都不能证明这些事实；提示词不携带扩展 ID。
 
 在运行任何 `node`、`npm`、`npx` 或 Skill `prepare` 命令前，先完成本节的平台检查与 Skill 安装方式选择。若 Skill 尚未安装，可先从 [GitHub 上的本文](https://github.com/MC0571/weixin-channels-video/blob/main/skills/weixin-channels-video/references/agent-installation.md)读取规则；该 Skill 的最低 Node 版本以 `scripts/runtime-support.mjs` 为准。
 
@@ -21,7 +21,7 @@ Vercel `skills` CLI 的 Agent 清单包含 `codex`、`claude-code`、`trae`、`t
 
 1. **先确定执行地点。** 使用当前 Agent 提供的 Shell/终端只读信息确认 OS、架构、当前 Shell 和 `node` 的实际路径；确认 Chrome 也在该机器上。若 Agent 是云端、远端或隔离容器，只有在已确认工具能操作同一台 Chrome 主机时才继续本地桥接。
 2. **已安装 Skill 时先核实。** 保留同名 Skill 的已有文件和本地修改。需要更新时按宿主官方更新方式处理，不用全量安装器覆盖其他 Skill。
-3. **插件页提示词或新机器没有 Skill 时，先取得完整官方 Skill Release 包。** 使用 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 的 Skill TAR.GZ/ZIP，不要求用户克隆源码仓库、运行构建或依赖 Chrome Web Store。释放出的目录必须完整保留 `SKILL.md`、`scripts/`、`references/` 和随包资源。
+3. **插件页提示词或新机器没有 Skill 时，先取得完整官方 Skill Release 包。** 使用 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 的 Skill TAR.GZ/ZIP，不要求用户克隆源码仓库或运行构建。Skill 包只包含 Skill 文档、CLI、Native Messaging host 和运行资源，不携带或管理 Chrome 扩展；扩展有独立的构建与发布包。
 4. **只有确认是受支持的 Agent CLI 且 Node 已满足最低版本，才用 Vercel `skills` CLI。** 先检查用户级目标目录中没有同名 Skill 或本地修改；如果已存在，按宿主官方更新方式处理，不能用自动确认覆盖。没有同名目标时，用 `--global` 安装到用户级目录，显式指定单一宿主和 Skill。`npx --yes` 只跳过 npm 下载一次性 CLI 包的确认，`skills add --yes` 只跳过安装器确认：
 
    ```sh
@@ -46,8 +46,8 @@ Vercel `skills` CLI 的 Agent 清单包含 `codex`、`claude-code`、`trae`、`t
 
 这些步骤由 `SKILL.md` 中的共享流程执行；本节只定义宿主、平台和权限差异，不复制解析或桥接业务规则。
 
-1. **当前扩展页 → Skill：** 页面显示的运行时扩展 ID 和 Profile 仅作线索。先确认 Agent 与 Chrome 在同一目标机器，再保留或安装 Skill。扩展 ID 以目标 Chrome 实际加载的版本为准；商店稳定 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`，GitHub Release 不代表商店已更新，解压安装则核对当前运行时的 `runtime.id`。
-2. **已安装 Skill → 扩展：** 先运行普通 `diagnose` 并按顶层 `nextAction` 处理连接问题。profile 是可选项；无 profile 时用 `install-bridge --extension-id <ID>` 注册，不枚举 Chrome 用户数据。运行 `pairing-info`，让用户在日常 Chrome 扩展的 Agent 设置中填入 `sessionId` 并保存，再用 `connect`、`status` 确认握手与登录。只有按显示名称选择用户时才需要 `list-profiles` 或候选 `diagnose --profile <name> --extension-id <ID>`；已知 profile 目录可直接引用。metadata 读取失败不阻止手动配对，也不应盖过已成功的握手。
-3. **换机且两者都缺失：** 先安装完整 Skill 并读取其 references；再用 Release 获取和校验运行资源；按目标机实际 Chrome 确认或安装扩展。来源页面 ID、旧机器 profile 名和路径只作线索。注册桥接、在日常 Chrome 中手动配对，最终通过 `connect` 和 `status` 验证实际握手。
+1. **当前扩展页 → Skill：** 页面提示词不包含固定或运行时扩展 ID。先确认 Agent 与 Chrome 在同一目标机器，再保留或安装 Skill。已安装且握手有效的扩展直接复用；配对时从用户选定扩展的详情页读取实际 ID 一次，用于 Native Messaging `allowed_origins` 和连接握手。扩展缺失时默认引导从 [README 的 Chrome Web Store 安装入口](https://github.com/MC0571/weixin-channels-video#chrome-扩展)安装；只有用户明确选择非商店版时，才使用 GitHub Release 的独立扩展 ZIP 并校验同一 Release 的 `SHA256SUMS`，或从源码构建。非商店扩展应放在持续保留目录，不能放进 Skill 缓存；移动可能改变 ID。
+2. **已安装 Skill → 扩展：** 先运行普通 `diagnose` 并按顶层 `nextAction` 处理连接问题。扩展缺失时默认引导商店安装；只有用户明确选择非商店版才启用开发者模式并加载独立扩展包。扩展 ID 从选定扩展详情页取得一次，再用 `install-bridge --extension-id <ID>` 注册。profile 是可选项；无 profile 时不枚举 Chrome 用户数据。运行 `pairing-info`，让用户在日常 Chrome 扩展的 Agent 设置中填入 `sessionId` 并保存，再用 `connect`、`status` 确认实时握手与登录。profile metadata 可用于辅助故障诊断或按显示名称选择用户；它不作为安装前提，也不证明扩展来源或实时连接。候选 profile diagnosis 不是实时握手；实时握手才是连接状态依据。
+3. **换机且两者都缺失：** 先安装完整 Skill 并读取其 references；再用 Release 获取和校验独立运行资源；扩展默认从 Chrome Web Store 安装。仅用户明确选择非商店版时，才下载并校验独立扩展 ZIP，或从源码构建，并加载到会持续保留的目录。旧机器扩展 ID、profile 名和路径不作为新机器的运行时值。注册桥接、在日常 Chrome 中手动配对，最终通过 `connect` 和 `status` 验证实际握手。
 
-三种入口最终都按 `SKILL.md` 完成扩展复用或安装、桥接注册、配对、`connect` 和 `status`。Chrome profile metadata 查询仅为按名称选择的辅助功能，不是安装或配对前提。macOS 注册仍需写入当前用户的 Chrome NativeMessagingHosts；若该写入被系统阻止，只说明这项写入需要的最小临时授权。metadata 读取受限时可直接手动配对，不要求完整磁盘访问或关闭沙箱。Chrome 冷启动可能被沙箱阻止，手动打开日常 Chrome 配对是可用的恢复路径。首次打开、系统授权、登录、扫码或验证码由用户完成；若 Agent 无法在目标机器读写文件、运行命令或取得 Release 包，不能声称已完成这些准备，只交接最短人工步骤。
+三种入口最终都按 `SKILL.md` 完成扩展复用或安装、桥接注册、配对、`connect` 和 `status`。Chrome profile metadata 可辅助故障诊断或按显示名称选择用户，不是安装或配对前提，也不扫描整个 profile。Chrome Native Messaging host 只登记本次从所选扩展详情页取得的实际 ID；候选记录不验证来源，实时握手验证连接，不重复检查商店/Release 来源。若商店版没有当前所需配对界面，先让用户等待商店更新，或明确选择独立 Release 版后再配对。macOS 注册仍需写入当前用户的 Chrome NativeMessagingHosts；若该写入被系统阻止，只说明这项写入需要的最小临时授权。metadata 读取受限时可直接手动配对，不要求完整磁盘访问或关闭沙箱。Chrome 冷启动可能被沙箱阻止，手动打开日常 Chrome 配对是可用的恢复路径。首次打开、系统授权、登录、扫码或验证码由用户完成；若 Agent 无法在目标机器读写文件、运行命令或取得 Release 包，不能声称已完成这些准备，只交接最短人工步骤。

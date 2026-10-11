@@ -92,11 +92,8 @@ await build({
 });
 await rm(join(extensionSource, 'app.js'), { force: true });
 await copyExtensionAssets(extensionOutput);
-await copyExtensionAssets(join(skillOutput, 'assets/extension'));
 await cp(join(root, 'LICENSE'), join(extensionOutput, 'LICENSE'));
-await cp(join(root, 'LICENSE'), join(skillOutput, 'assets/extension/LICENSE'));
 await cp(join(root, 'NOTICE.md'), join(extensionOutput, 'NOTICE.md'));
-await cp(join(root, 'NOTICE.md'), join(skillOutput, 'assets/extension/NOTICE.md'));
 
 if (releasePackage) {
   const { stdout, stderr } = await execFileAsync('python3', [

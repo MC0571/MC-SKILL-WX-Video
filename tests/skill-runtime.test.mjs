@@ -21,7 +21,7 @@ const validArchive = () => skillArchive([
 ]);
 
 test('runner declares the tested Node minimum and platform cache roots', () => {
-  assert.equal(RUNTIME_PROTOCOL, 2);
+  assert.equal(RUNTIME_PROTOCOL, 3);
   assert.equal(MIN_NODE_VERSION, '22.22.2');
   assert.equal(supportsNodeVersion('22.22.1'), false);
   assert.equal(supportsNodeVersion('22.22.2'), true);

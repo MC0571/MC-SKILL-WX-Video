@@ -1,4 +1,4 @@
-export const RUNTIME_PROTOCOL = 2;
+export const RUNTIME_PROTOCOL = 3;
 export const MIN_NODE_VERSION = "22.22.2";
 
 function versionParts(value) {

@@ -16,10 +16,10 @@
 
 ## Chrome 扩展
 
-可选择以下两种安装方式：
+默认从 Chrome Web Store 安装。只有你明确选择非商店版本时，才使用 GitHub Release 或源码构建的独立扩展包：
 
-- **商店安装**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 直接安装。商店版本受审核进度影响，可能落后于 GitHub Releases 或仓库代码。
-- **开发者模式安装**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip` 并解压，或按[构建说明](docs/architecture.md#构建与发布)自行构建，生成 `dist/extension/`。在 `chrome://extensions` 开启开发者模式，点击“加载已解压的扩展程序”，选择解压后的扩展目录或 `dist/extension/`（目录内应包含 `manifest.json`）。商店无法访问时，也可使用此方式安装。
+- **商店安装（默认）**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。商店版本可能晚于 GitHub Release；以 Chrome 当前安装版本和实际界面为准。
+- **非商店安装（需明确选择）**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip`，并按同一 Release 的 `SHA256SUMS` 核验；也可按[构建说明](docs/architecture.md#构建与发布)从源码构建。将 ZIP 解压到会持续保留的位置，再在 `chrome://extensions` 启用开发者模式并加载该目录。不要把扩展放进 Skill 缓存；移动目录可能改变扩展 ID。开发者模式只用于此非商店安装方式。
 
 1. 在安装扩展的 Chrome 用户中登录 [腾讯元宝](https://yuanbao.tencent.com/)。
 2. 点击扩展图标，在打开的页面中粘贴分享链接并解析。
@@ -28,7 +28,7 @@
 
 视频保存位置遵循 Chrome 下载设置，重名时自动改名。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
 
-标题区的“Agent 设置”可打开完整安装提示词。复制后交给 AI，它会安装 Skill 并复用当前扩展。
+标题区的“Agent 设置”可打开完整安装提示词。提示词不包含扩展 ID；AI 会安装 Skill，并在配对时使用你当前选定扩展详情页显示的实际 ID。
 
 ![Agent 设置](docs/images/agent-settings.jpg)
 
@@ -51,7 +51,7 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-首次使用，Skill 会准备带校验的运行资源并注册本地桥接。能读取 Chrome profile 信息时可由你选择目标用户；读取受限时仍可手动配对，不需要反复重装或扩大权限。已安装且连接有效时直接复用。多个 Chrome 用户时，由你选择，不逐个尝试账号。
+首次使用，Skill 会准备带校验的运行资源并注册本地桥接。扩展与 Skill 分开安装和更新：扩展缺失时默认引导安装商店版；只有你明确选择非商店版时才使用独立 Release ZIP 或源码构建。已安装且连接有效的扩展直接复用。需要配对时，从选定扩展的详情页取得实际 ID 一次，用于桥接登记和实时握手；实时握手是连接状态依据。按名称选择 Chrome 用户时，profile metadata 查询可作辅助，不要求枚举整个 profile，也不反复验证扩展来源。
 
 需要自己操作时，在安装后的 Skill 目录执行以下命令。先按 reference 确认 OS、实际 Shell/执行环境、Node 与目标 Chrome 在同一台机器；Windows 原生与 WSL 的命令和 Node 路径不可混用：
 
@@ -64,17 +64,17 @@ node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
 ```
 
-商店扩展 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`。开发者模式安装的 ID 可能不同，请从目标 Chrome profile 的扩展详情取得，或使用页面生成的提示词作为待核实线索。
+从目标 Chrome 用户中选定扩展的详情页取得实际扩展 ID，再用于 `install-bridge`。提示词本身不提供固定或运行时扩展 ID。
 
 需要指定 Chrome 用户时，在 `install-bridge` 命令后添加 `--profile '目录名或名称'`；不指定时使用手动配对流程。
 
-`prepare` 为从仓库安装的 Skill 获取最新正式 Release，验证 SHA256 和运行协议；普通命令复用本地资源，首次没有资源时自动准备。Release Skill 包已携带所需资源，可离线准备。首次下载资源需要已发布的正式 Release 和网络连接。
+`prepare` 为从仓库安装的 Skill 获取最新正式 Release，验证 SHA256 和资源包运行协议；普通命令复用本地资源，首次没有资源时自动准备。独立 Skill Release 包自带所需运行资源，可离线准备。运行资源协议为 3，与 Chrome Native Messaging 协议 1 和本地 IPC 协议 2 分开版本管理。首次从源码 Skill 下载资源需要发布了兼容协议资源的正式 Release 和网络连接。
 
 升级 Skill 后先执行 `prepare`，再检查 `status`。首次使用或需要重新配对时运行 `pairing-info`，将 `sessionId` 填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。`connect`、`diagnose` 与 `status` 用于连接及登录状态核实；连接失败时按 `diagnose` 返回的 `nextAction` 处理。profile 可选；不指定时不会枚举 Chrome 用户数据。
 
 下载默认以视频标题命名。`--filename '视频.mp4'` 可指定 Chrome 下载目录内的相对文件名。AI 会在 Chrome 确认完成后展示视频、各版本链接和最终路径。任务超时或断连后不会自动重发，避免重复下载。
 
-扩展“Agent 设置”面板显示实际扩展版本、本地程序的连接阶段和恢复建议。若尚未配对，运行 `pairing-info`，将输出的配对标识填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。配对标识不是 IPC 密钥，常规日志不输出它。商店优先使用稳定扩展 ID `jdecfnemmnhbpamcfhmgjkcphgomgjoe`；解压安装请核对当前运行时的实际 ID，GitHub 包版本也不代表商店已生效版本。登录失效时在同一 Chrome 用户重新登录；网络检查失败不代表未登录。更多恢复步骤见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+扩展“Agent 设置”面板显示实际扩展版本、本地程序的连接阶段和恢复建议。若尚未配对，运行 `pairing-info`，将输出的配对标识填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。配对标识不是 IPC 密钥，常规日志不输出它。商店审核与上线可能有延迟；若商店界面没有 Skill 所需功能，可等待商店更新，或明确选择独立 Release 版本。GitHub 发布或送审不代表商店已更新。登录失效时在同一 Chrome 用户重新登录；网络检查失败不代表未登录。更多恢复步骤见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
 
 ## 自部署 API
 
