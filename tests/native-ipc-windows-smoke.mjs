@@ -192,7 +192,7 @@ async function requestThroughNativeHost(fixture, input, frames) {
   const nativeRequest = await frames.next(20_000);
   assert.deepEqual(nativeRequest, request);
   input.write(Buffer.from(encodeBridgeFrame({ id, ok: true, result: { login: "anonymous" } })));
-  assert.deepEqual(await responsePromise, { login: "anonymous" });
+  assert.deepEqual(await responsePromise, { login: "anonymous", versions: { host: "unknown" } });
 }
 
 async function smokeLiveHostTimeoutRecovery(fixture, partial) {

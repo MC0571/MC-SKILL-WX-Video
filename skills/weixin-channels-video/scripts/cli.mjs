@@ -74,7 +74,7 @@ async function ensureBridgeConnection(config, sessionInfo, { launch, bridgeWait 
   try { await bridgeWait(config, sessionInfo, { timeoutMs: BRIDGE_WAIT_MS }); }
   catch (error) {
     if (error instanceof BridgeError && error.code === "BRIDGE_TIMEOUT") {
-      throw cliBridgeError("BRIDGE_TIMEOUT", "pairing", "Chrome 启动请求已提交，但扩展尚未完成 Native Messaging 握手。请在选定的 Chrome profile 中启用扩展并重新运行 connect。");
+      throw cliBridgeError("BRIDGE_TIMEOUT", "pairing", "Chrome 启动请求已提交，但尚未收到扩展连接握手。请手动打开日常使用的 Chrome，并确认所选用户已启用扩展；若自动配对页未打开，运行 pairing-info，将 sessionId 填入扩展 Agent 设置，再重新运行 connect 或 status。");
     }
     throw error;
   }

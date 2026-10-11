@@ -599,6 +599,26 @@ test("connect launches Chrome once only after a missing live handshake", async (
   assert.equal(waits, 2);
 });
 
+test("failed automatic launch points to daily Chrome and manual pairing recovery", async () => {
+  const errors = [];
+  let launches = 0;
+  let waits = 0;
+  const code = await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID, profileDirectory: "Profile 2" }),
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    bridgeWait: async () => { waits += 1; throw new BridgeError("BRIDGE_TIMEOUT", "ignored"); },
+    launch: async () => { launches += 1; },
+  });
+  assert.equal(code, 1);
+  assert.equal(launches, 1);
+  assert.equal(waits, 2);
+  assert.match(errors[0], /手动打开日常使用的 Chrome/);
+  assert.match(errors[0], /确认所选用户已启用扩展/);
+  assert.match(errors[0], /pairing-info/);
+  assert.match(errors[0], /connect 或 status/);
+});
+
 test("profile-less connect waits for manual pairing and never launches Chrome", async () => {
   const errors = [];
   let launches = 0;
