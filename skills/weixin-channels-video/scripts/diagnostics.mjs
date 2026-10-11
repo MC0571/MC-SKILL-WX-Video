@@ -212,11 +212,6 @@ export async function launchChrome(config, sessionId, {
 
 function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, candidateAction }) {
   if (connection.state === "connected") return [];
-  if (configuration === "configured" && !config?.profileDirectory) {
-    return [bridge.session === "missing" || bridge.session === "invalid"
-      ? "repair_bridge_registration"
-      : "complete_manual_extension_pairing"];
-  }
   const actions = [];
   if (chrome.installation === "not_installed") actions.push("install_chrome_after_user_approval");
   else if (chrome.compatibility === "too_old") actions.push("upgrade_chrome");
@@ -236,6 +231,13 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
   }
   if (bridge.session === "missing") actions.push("repair_bridge_registration");
   else if (bridge.session === "invalid") actions.push("repair_extension_pairing_after_user_approval");
+  if (configuration === "configured" && !config?.profileDirectory) {
+    if (actions.length) return [...new Set(actions)];
+    return bridge.registration === "valid" && bridge.host === "present" && bridge.launcher === "valid" &&
+      bridge.node === "available" && bridge.session === "available" && bridge.security === "valid"
+      ? ["complete_manual_extension_pairing"]
+      : ["inspect_chrome_extension_and_bridge_manually"];
+  }
   if (connection.state === "session_mismatch") actions.push("repair_bridge_session_mismatch");
   else if (["connection_failed", "disconnected", "timeout"].includes(connection.state)) actions.push("restore_connection_before_next_task");
   if (configuration !== "configured" && !actions.length) actions.push("configure_bridge_and_select_profile");

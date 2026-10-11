@@ -344,12 +344,37 @@ test("an authenticated bridge stays connected without metadata-based recovery ac
   }, {
     inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
     inspectProfile: async () => ({ state: "unknown", extension: "unknown" }),
-    inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" }),
+    inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "unknown" }),
     bridgeWait: async () => {},
   });
   assert.deepEqual(result.connection, { state: "connected" });
   assert.deepEqual(result.actions, []);
   assert.equal(result.nextAction, undefined);
+});
+
+test("profile-less diagnosis repairs bridge prerequisites before requesting manual pairing", async () => {
+  const base = { registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" };
+  const cases = [
+    [{ registration: "missing" }, "repair_bridge_if_authorized"],
+    [{ host: "missing" }, "repair_bridge_if_authorized"],
+    [{ security: "invalid" }, "repair_bridge_if_authorized"],
+    [{ node: "missing" }, "register_bridge_with_a_supported_node"],
+    [{ session: "missing" }, "repair_bridge_registration"],
+    [{}, "complete_manual_extension_pairing"],
+  ];
+  for (const [override, expected] of cases) {
+    const result = await diagnoseEnvironment({
+      configuration: "configured",
+      config: { extensionId: EXTENSION_ID, appSupportDir: "/private/bridge" },
+    }, {
+      inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
+      inspectBridge: async () => ({ ...base, ...override }),
+    });
+    assert.equal(result.nextAction, expected, JSON.stringify(override));
+    if (expected !== "complete_manual_extension_pairing") {
+      assert.equal(result.actions.includes("complete_manual_extension_pairing"), false);
+    }
+  }
 });
 
 test("diagnosis recommends bridge repair when Windows private-path security is invalid", async () => {
