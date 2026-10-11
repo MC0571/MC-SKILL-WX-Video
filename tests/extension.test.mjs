@@ -10,7 +10,7 @@ import {
   startDownload,
   waitForDownload,
 } from "../extension/app.mjs";
-import { startAgent } from "../extension/agent.mjs";
+import { initializeManualPairing, startAgent } from "../extension/agent.mjs";
 import { API_URLS } from "../src/core.mjs";
 
 function createHiddenIframeHarness() {
@@ -603,7 +603,9 @@ test("background accepts a pairing sender whose index page URL still carries the
       frameId: 0,
       url: `chrome-extension://${extensionId}/index.html#agent-connect=${sessionId}`,
     };
-    assert.deepEqual(await send({ type: "weixin-channels-video:pair", sessionId }, withFragment), { ok: true });
+    const pairMessage = { type: "weixin-channels-video:pair", sessionId };
+    assert.deepEqual(await send(pairMessage, withFragment), { ok: true });
+    assert.equal(Object.hasOwn(pairMessage, "ipcSecret"), false);
     assert.equal(ports.length, 1);
 
     const wrongPage = {
@@ -612,6 +614,8 @@ test("background accepts a pairing sender whose index page URL still carries the
       url: `chrome-extension://${extensionId}/other.html#agent-connect=${sessionId}`,
     };
     assert.equal(await send({ type: "weixin-channels-video:pair", sessionId }, wrongPage), undefined);
+    assert.equal(await send(pairMessage, { ...withFragment, id: "untrusted-extension-id" }), undefined);
+    assert.equal(await send(pairMessage, { ...withFragment, frameId: 3 }), undefined);
     assert.equal(ports.length, 1);
   });
 });
@@ -1242,4 +1246,49 @@ test("manual extension page stays open and invalid pairing hashes are removed wi
   assert.equal(sends, 0);
   assert.equal(removes, 0);
   assert.equal(windowApi.location.hash, "");
+});
+
+test("manual pairing validates UUID and reports actual extension storage and manifest version", async () => {
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  const values = new Map();
+  const controls = new Map([
+    ["#manual-pairing-form", { addEventListener(_type, listener) { this.submit = listener; } }],
+    ["#pairing-session-id", { value: "", focus() {} }],
+    ["#manual-pairing-status", { dataset: {} }],
+    ["#pairing-storage-status", { dataset: {} }],
+    ["#extension-version", {}],
+  ]);
+  const sent = [];
+  const chromeApi = {
+    storage: {
+      local: { async get(key) { return { [key]: values.get(key) }; } },
+      onChanged: { addListener() {} },
+    },
+    runtime: {
+      getManifest: () => ({ version: "0.2.2" }),
+      sendMessage: async (message) => {
+        sent.push(message);
+        values.set("weixin-channels-video:bridge-session", message.sessionId);
+        return { ok: true };
+      },
+    },
+  };
+  initializeManualPairing({ chromeApi, documentApi: { querySelector: (selector) => controls.get(selector) } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(controls.get("#extension-version").textContent, "0.2.2");
+  assert.match(controls.get("#pairing-storage-status").textContent, /尚未保存/);
+
+  const submit = async () => controls.get("#manual-pairing-form").submit({ preventDefault() {} });
+  controls.get("#pairing-session-id").value = "not-a-uuid";
+  await submit();
+  assert.equal(sent.length, 0);
+  assert.match(controls.get("#manual-pairing-status").textContent, /完整/);
+
+  controls.get("#pairing-session-id").value = sessionId;
+  await submit();
+  assert.deepEqual(sent, [{ type: "weixin-channels-video:pair", sessionId }]);
+  assert.match(controls.get("#pairing-storage-status").textContent, /已保存/);
+  assert.doesNotMatch(controls.get("#pairing-storage-status").textContent, new RegExp(sessionId));
+  assert.match(controls.get("#manual-pairing-status").textContent, /查看上方连接状态/);
+  assert.doesNotMatch(controls.get("#manual-pairing-status").textContent, new RegExp(sessionId));
 });

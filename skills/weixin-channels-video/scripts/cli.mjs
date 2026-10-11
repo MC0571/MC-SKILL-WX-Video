@@ -8,16 +8,23 @@ import { BridgeSetupError, installBridge, listBridgeProfiles, readBridgeInstalla
 import { BridgeError, requestBridge, waitForBridge } from "./bridge-client.mjs";
 import { diagnoseEnvironment, launchChrome } from "./diagnostics.mjs";
 
-const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID --profile NAME | diagnose [--profile NAME --extension-id ID] | status | connect | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
+const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID] | status | connect | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const ERROR_MESSAGES = Object.freeze({ ...PARSE_ERROR_MESSAGES, ...BRIDGE_ERROR_MESSAGES });
-const STARTUP_WAIT_MS = 5_000;
+const CLI_VERSION = typeof __WCV_VERSION__ === "string" ? __WCV_VERSION__ : "unknown";
 const BRIDGE_WAIT_MS = 30_000;
+
+function cliBridgeError(code, stage, message) {
+  const error = new BridgeError(code, message);
+  error.cliStage = stage;
+  return error;
+}
 
 function parseArguments(command, args) {
   const allowed = {
     "list-profiles": [],
     "install-bridge": ["extension-id", "profile"],
+    "pairing-info": [],
     diagnose: ["profile", "extension-id"],
     status: [],
     connect: [],
@@ -37,7 +44,7 @@ function parseArguments(command, args) {
     options[key] = value;
     index += 1;
   }
-  if (command === "install-bridge" && (!options["extension-id"] || !options.profile)) throw new Error("USAGE");
+  if (command === "install-bridge" && !options["extension-id"]) throw new Error("USAGE");
   if (command === "diagnose" && Boolean(options.profile) !== Boolean(options["extension-id"])) throw new Error("USAGE");
   if (command === "diagnose" && options["extension-id"] && !EXTENSION_ID_PATTERN.test(options["extension-id"])) throw new Error("USAGE");
   if (["parse", "download"].includes(command) && !options.url) throw new Error("USAGE");
@@ -53,16 +60,24 @@ async function ensureBridgeConnection(config, sessionInfo, { launch, bridgeWait 
     if (!(error instanceof BridgeError) || error.code !== "BRIDGE_TIMEOUT") throw error;
   }
 
-  await launch(config);
-  try {
-    await bridgeWait(config, sessionInfo, { timeoutMs: STARTUP_WAIT_MS });
-    return;
-  } catch (error) {
-    if (!(error instanceof BridgeError) || error.code !== "BRIDGE_TIMEOUT") throw error;
+  if (!config.profileDirectory) {
+    try {
+      await bridgeWait(config, sessionInfo, { timeoutMs: BRIDGE_WAIT_MS });
+      return;
+    } catch (error) {
+      if (!(error instanceof BridgeError) || error.code !== "BRIDGE_TIMEOUT") throw error;
+      throw cliBridgeError("BRIDGE_TIMEOUT", "pairing", "等待扩展手动配对超时。请运行 pairing-info，将 sessionId 填入扩展 Agent 设置，然后重新运行 connect。");
+    }
   }
 
   await launch(config, sessionInfo?.sessionId);
-  await bridgeWait(config, sessionInfo, { timeoutMs: BRIDGE_WAIT_MS });
+  try { await bridgeWait(config, sessionInfo, { timeoutMs: BRIDGE_WAIT_MS }); }
+  catch (error) {
+    if (error instanceof BridgeError && error.code === "BRIDGE_TIMEOUT") {
+      throw cliBridgeError("BRIDGE_TIMEOUT", "pairing", "Chrome 启动请求已提交，但扩展尚未完成 Native Messaging 握手。请在选定的 Chrome profile 中启用扩展并重新运行 connect。");
+    }
+    throw error;
+  }
 }
 
 export async function runCli(argv, {
@@ -102,7 +117,16 @@ export async function runCli(argv, {
     }
     if (command === "install-bridge") {
       const result = await install({ extensionId: options["extension-id"], profile: options.profile });
-      stdout(JSON.stringify({ installed: true, profile: result.profile.name, extensionId: result.config.extensionId }));
+      stdout(JSON.stringify({ installed: true, profile: result.profile?.name ?? null, extensionId: result.config.extensionId, versions: { cli: CLI_VERSION, host: "unknown", extension: "unknown" } }));
+      return 0;
+    }
+
+    if (command === "pairing-info") {
+      const config = await readInstallation();
+      if (!config) throw new BridgeError("BRIDGE_NOT_CONFIGURED", BRIDGE_ERROR_MESSAGES.BRIDGE_NOT_CONFIGURED);
+      const sessionInfo = await readSession(config);
+      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地配对信息缺失。请重新运行 install-bridge 注册桥接，再运行 pairing-info。");
+      stdout(JSON.stringify({ sessionId: sessionInfo.sessionId }));
       return 0;
     }
 
@@ -136,7 +160,7 @@ export async function runCli(argv, {
     const config = await readInstallation();
     if (!config) {
       if (command === "status") {
-        stdout(JSON.stringify({ configuration: "unconfigured", connection: "disconnected", login: "not_checked" }));
+        stdout(JSON.stringify({ configuration: "unconfigured", connection: "disconnected", login: "not_checked", versions: { cli: CLI_VERSION, host: "unknown", extension: "unknown" } }));
         return 0;
       }
       throw new BridgeError("BRIDGE_NOT_CONFIGURED", BRIDGE_ERROR_MESSAGES.BRIDGE_NOT_CONFIGURED);
@@ -144,33 +168,37 @@ export async function runCli(argv, {
     const sessionInfo = await readSession(config);
 
     if (command === "status") {
+      const writeStatus = (values, versions = {}) => stdout(JSON.stringify({
+        ...values,
+        versions: { cli: CLI_VERSION, host: versions.host ?? "unknown", extension: versions.extension ?? "unknown" },
+      }));
       if (!sessionInfo) {
-        stdout(JSON.stringify({ configuration: "configured", connection: "disconnected", login: "not_checked" }));
+        writeStatus({ configuration: "configured", connection: "disconnected", login: "not_checked" });
         return 0;
       }
       const id = randomUUID();
       try {
         const result = await bridgeRequest(config, sessionInfo, { id, command: "status" }, { timeoutMs: 30_000 });
         if (!["authenticated", "anonymous"].includes(result?.login)) throw new BridgeError("BRIDGE_PROTOCOL_ERROR", "ignored");
-        stdout(JSON.stringify({ configuration: "configured", connection: "connected", login: result.login }));
+        writeStatus({ configuration: "configured", connection: "connected", login: result.login }, result.versions);
       } catch (error) {
         if (error instanceof BridgeError && error.code === "LOGIN_CHECK_FAILED") {
-          stdout(JSON.stringify({ configuration: "configured", connection: "connected", login: "failed:LOGIN_CHECK_FAILED" }));
+          writeStatus({ configuration: "configured", connection: "connected", login: "failed:LOGIN_CHECK_FAILED" });
           return 1;
         }
         const code = error instanceof BridgeError ? error.code : "BRIDGE_PROTOCOL_ERROR";
         if (code === "BRIDGE_DISCONNECTED") {
-          stdout(JSON.stringify({ configuration: "configured", connection: "disconnected", login: "not_checked" }));
+          writeStatus({ configuration: "configured", connection: "disconnected", login: "not_checked" });
           return 0;
         }
-        stdout(JSON.stringify({ configuration: "configured", connection: `failed:${code}`, login: "not_checked" }));
+        writeStatus({ configuration: "configured", connection: `failed:${code}`, login: "not_checked" });
         return 1;
       }
       return 0;
     }
 
     if (command === "connect") {
-      if (!sessionInfo) throw new BridgeError("BRIDGE_NOT_CONFIGURED", BRIDGE_ERROR_MESSAGES.BRIDGE_NOT_CONFIGURED);
+      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地配对信息缺失。请重新运行 install-bridge 注册桥接，再运行 pairing-info 获取 sessionId。");
       await ensureBridgeConnection(config, sessionInfo, { launch, bridgeWait });
       stdout("Connected to the Chrome extension.");
       return 0;
@@ -208,8 +236,14 @@ export async function runCli(argv, {
       : command === "install-bridge" || command === "list-profiles" ? "BRIDGE_INSTALL_FAILED" : "BRIDGE_CONFIG_INVALID";
     const message = error instanceof BridgeSetupError
       ? error.message
+      : error instanceof BridgeError && error.cliStage ? error.message
       : ERROR_MESSAGES[code] ?? "请求失败。";
-    stderr(`${code}: ${message}`);
+    const stage = error instanceof BridgeError && error.cliStage ? error.cliStage :
+      command === "install-bridge" || command === "list-profiles" || command === "pairing-info" ? "resource" :
+      code.startsWith("CHROME_") ? "launch" :
+        code === "LOGIN_CHECK_FAILED" ? "login-check" :
+          ["BRIDGE_TIMEOUT", "BRIDGE_DISCONNECTED", "BRIDGE_CONNECTION_FAILED", "BRIDGE_SESSION_MISMATCH"].includes(code) ? "bridge-authentication" : "bridge";
+    stderr(`${stage} ${code}: ${message}`);
     return 1;
   }
 

@@ -90,6 +90,49 @@ h2 {
   color: #ffb4ab;
 }
 
+.ai-prompt-popover .extension-version,
+.ai-prompt-popover .pairing-help {
+  margin: 0 0 8px;
+  color: #c6c6c6;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.manual-pairing-form {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 0;
+  border-block: 1px solid #454640;
+}
+
+.manual-pairing-form label {
+  margin: 0;
+  color: #e2e2dc;
+}
+
+.manual-pairing-form input {
+  min-height: 42px;
+  border-color: #777970;
+  background: #242521;
+  color: #f1f1ec;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+}
+
+.manual-pairing-form input:focus-visible {
+  outline-color: #d0d6ca;
+}
+
+.manual-pairing-form .primary-button {
+  justify-self: start;
+  min-height: 38px;
+}
+
+.manual-pairing-form .status[data-error="true"] {
+  color: #ffb4ab;
+}
+
 .card {
   margin-bottom: 14px;
   padding: 22px;

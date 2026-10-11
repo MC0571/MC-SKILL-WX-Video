@@ -25,6 +25,7 @@ import {
 import { assertWindowsPrivatePath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
 const failure = (id, code, message) => ({ id, ok: false, error: { code, message } });
+const HOST_VERSION = typeof __WCV_VERSION__ === "string" ? __WCV_VERSION__ : "unknown";
 const AUTH_TIMEOUT_MS = 5_000;
 
 function isRecord(value) {
@@ -336,7 +337,7 @@ export async function startNativeHost({
         return;
       }
       client.phase = "response";
-      nativeRequest = { id: request.id, client };
+      nativeRequest = { id: request.id, command: request.command, client };
       try { writeFrame(output, request); }
       catch { closeClient(client); }
       return;
@@ -375,6 +376,9 @@ export async function startNativeHost({
       if (nativeRequest && validateBridgeResponse(message, nativeRequest.id)) {
         const request = nativeRequest;
         nativeRequest = undefined;
+        if (request.command === "status" && message.ok && isRecord(message.result)) {
+          message.result.versions = { ...message.result.versions, host: HOST_VERSION };
+        }
         finishClient(request.client, { type: "result", version: 2, response: message });
       }
     }

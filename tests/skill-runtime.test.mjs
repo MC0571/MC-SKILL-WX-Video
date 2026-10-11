@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { test } from 'node:test';
@@ -87,4 +87,35 @@ test('runner rejects path traversal, links, duplicate portable names, and malfor
   ]);
   brokenEnd[1024] = 1;
   assert.throws(() => parseSkillArchive(gzipSync(brokenEnd)), /Skill TAR 包结束标记无效/);
+});
+
+test('runner rejects files and symlinks where the application cache directory must be', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'skill-runtime-cache-boundary-'));
+  const originalHome = process.env.HOME;
+  const originalLocalAppData = process.env.LOCALAPPDATA;
+  if (process.platform === 'win32') process.env.LOCALAPPDATA = home;
+  else process.env.HOME = home;
+
+  try {
+    const runtimeUrl = new URL('../skills/weixin-channels-video/scripts/run.mjs', import.meta.url);
+    runtimeUrl.searchParams.set('fixture', 'cache-boundary');
+    const runtime = await import(runtimeUrl);
+    const appCacheRoot = process.platform === 'win32'
+      ? join(home, 'weixin-channels-video')
+      : join(home, 'Library', 'Caches', 'weixin-channels-video');
+    await mkdir(join(appCacheRoot, '..'), { recursive: true });
+    await writeFile(appCacheRoot, 'occupied');
+    await assert.rejects(runtime.run(['status']), /运行资源缓存目录不安全/);
+    await rm(appCacheRoot);
+    const target = join(home, 'cache-target');
+    await mkdir(target);
+    await symlink(target, appCacheRoot);
+    await assert.rejects(runtime.run(['status']), /运行资源缓存目录不安全/);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = originalLocalAppData;
+    await rm(home, { recursive: true, force: true });
+  }
 });

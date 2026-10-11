@@ -7,6 +7,7 @@ const ERROR_MESSAGES = Object.freeze({ ...PARSE_ERROR_MESSAGES, ...BRIDGE_ERROR_
 const VIDEO_RESULT_FIELDS = ["title", "author", "coverUrl", "previewUrl", "downloadUrl"];
 const STORE_EXTENSION_ID = "jdecfnemmnhbpamcfhmgjkcphgomgjoe";
 const BRIDGE_CONNECTION_STORAGE_KEY = "weixin-channels-video:bridge-connection-state";
+const BRIDGE_SESSION_STORAGE_KEY = "weixin-channels-video:bridge-session";
 const BRIDGE_CONNECTION_STAGES = new Set(["pairing_saved", "host_starting", "host_ready", "failed"]);
 const BRIDGE_CONNECTION_REASONS = new Set([
   "connect_native_failed",
@@ -108,6 +109,68 @@ function initializeBridgeConnectionStatus({ chromeApi = globalThis.chrome } = {}
   });
 }
 
+export function initializeManualPairing({ chromeApi = globalThis.chrome, documentApi = globalThis.document } = {}) {
+  const form = documentApi?.querySelector("#manual-pairing-form");
+  const input = documentApi?.querySelector("#pairing-session-id");
+  const status = documentApi?.querySelector("#manual-pairing-status");
+  const storageStatus = documentApi?.querySelector("#pairing-storage-status");
+  const version = documentApi?.querySelector("#extension-version");
+  const storage = chromeApi?.storage?.local;
+  if (!form || !input || !status || !storageStatus || !version) return;
+
+  let manifestVersion;
+  try { manifestVersion = chromeApi?.runtime?.getManifest?.()?.version; }
+  catch { /* A non-extension preview has no manifest version. */ }
+  version.textContent = typeof manifestVersion === "string" && manifestVersion ? manifestVersion : "unknown";
+
+  const readStorage = async () => {
+    if (typeof storage?.get !== "function") {
+      storageStatus.textContent = "配对信息存储状态：扩展存储不可用。";
+      storageStatus.dataset.error = "true";
+      return;
+    }
+    try {
+      const stored = await storage.get(BRIDGE_SESSION_STORAGE_KEY);
+      storageStatus.textContent = SESSION_ID_PATTERN.test(stored?.[BRIDGE_SESSION_STORAGE_KEY] ?? "")
+        ? "已保存配对信息。"
+        : "尚未保存配对信息。";
+      storageStatus.dataset.error = "false";
+    } catch {
+      storageStatus.textContent = "配对信息存储状态：无法读取 Chrome 扩展存储。";
+      storageStatus.dataset.error = "true";
+    }
+  };
+  void readStorage();
+  chromeApi.storage?.onChanged?.addListener((changes, areaName) => {
+    if (areaName === "local" && Object.hasOwn(changes ?? {}, BRIDGE_SESSION_STORAGE_KEY)) void readStorage();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const sessionId = input.value.trim();
+    if (!SESSION_ID_PATTERN.test(sessionId)) {
+      status.textContent = "请粘贴完整的配对码。";
+      status.dataset.error = "true";
+      input.setAttribute?.("aria-invalid", "true");
+      input.focus();
+      return;
+    }
+    input.removeAttribute?.("aria-invalid");
+    status.textContent = "正在保存配对信息并连接。";
+    status.dataset.error = "false";
+    try {
+      const response = await chromeApi.runtime.sendMessage({ type: PAIRING_MESSAGE_TYPE, sessionId });
+      if (response?.ok !== true) throw new Error();
+      status.textContent = "配对信息已保存；请查看上方连接状态。若连接失败，请让 AI 运行 diagnose。";
+      status.dataset.error = "false";
+      await readStorage();
+    } catch {
+      status.textContent = "提交失败。请确认当前页面由此扩展打开后重试。";
+      status.dataset.error = "true";
+    }
+  });
+}
+
 export function createAgentCommandHandler({
   chromeApi = globalThis.chrome,
   requestFactory = () => createExtensionRequest(),
@@ -123,7 +186,10 @@ export function createAgentCommandHandler({
     try {
       if (request.command === "status") {
         const login = await loginChecker(requestFactory());
-        return { id: request.id, ok: true, result: { login: login.status } };
+        let version = "unknown";
+        try { version = chromeApi?.runtime?.getManifest?.()?.version || version; }
+        catch { /* A non-extension runtime does not expose a manifest version. */ }
+        return { id: request.id, ok: true, result: { login: login.status, versions: { extension: version } } };
       }
 
       const video = await parser(request.url, { request: requestFactory() });
@@ -203,14 +269,11 @@ function initializeAIDownloadPrompt({ chromeApi = globalThis.chrome, windowApi =
   if (!openButton || !popover || !promptText || !copyButton || !copyStatus) return;
 
   const runtimeExtensionId = chromeApi?.runtime?.id;
-  const extensionId = runtimeExtensionId
-    ? `当前页面运行中的扩展 ID（来自 chrome.runtime.id）：${runtimeExtensionId}`
-    : "当前运行中的扩展 ID：HTTP 预览无法读取，请从当前 Chrome profile 查询实际安装版本的 ID。";
   const prompt = [
     "请为我安装并准备视频号分享链接解析工具。本次仅安装并完成连接准备，暂不解析或下载。之后我明确提供分享链接并要求下载时，直接按 Skill 执行。",
     "",
     "先确定你实际运行的 Agent、OS、CPU 架构、Shell/执行环境，以及能否操作目标机器上的 Chrome。若处于云端、远端或隔离环境，不要假设能访问本机 Chrome。",
-    "扩展页面里的 ID 和 profile 只作线索；在目标机器、选定 Chrome profile 中核实实际安装来源、启用状态和 ID。唯一 profile 直接使用；多个 profile 且我未指定时只问我一次，并在后续步骤复用。不要逐个尝试账号或创建新 profile。",
+    "商店安装推荐使用下面列出的商店稳定 ID；商店版本可能落后于仓库或 Release。开发者模式安装使用本页显示的 runtime.id，它是当前运行扩展的实际 ID。先核实目标 Chrome 中安装来源、启用状态和 ID。除非需要指定 Chrome 用户，不要求读取 profile 元数据；多个 profile 且需要选择时只问我一次，不逐个尝试账号或创建新 profile。",
     "",
     "在运行任何 node/npm/npx/prepare 命令前，先读取并遵守此安装说明（当前可从 GitHub 直接读取）：",
     "https://github.com/MC0571/weixin-channels-video/blob/main/skills/weixin-channels-video/references/agent-installation.md",
@@ -221,10 +284,10 @@ function initializeAIDownloadPrompt({ chromeApi = globalThis.chrome, windowApi =
     "其他 Agent 必须按实际产品换成唯一对应的键，不能照抄 codex 示例。",
     "不要省略 --agent、不要用 --all。WorkBuddy、豆包工作和 QwenWork 使用各自官方入口；产品、导入包格式或本地命令能力未明确时，说明未知并交接，不借用 CodeBuddy/Qwen Code 映射。",
     "",
-    "Skill 安装后读取完整 SKILL.md 和 references，运行 prepare，再运行普通 diagnose；先处理顶层 nextAction 并重新诊断。runtime 描述包内资源版本，currentNode 是运行 CLI 的 Node，bridge.node / bridge.nodeVersion 是桥接使用的 Node。桥接未注册但目标 profile 和扩展 ID 已知时，用 `diagnose --profile <directory-or-unique-name> --extension-id <extension-id>` 做成对的只读候选检查；candidate.nextAction 是候选项的具体动作，若同时存在顶层 nextAction，先处理顶层项（Chrome/Node 阻断项优先，候选动作早于未配置桥接的泛化动作）。candidate.status 仅表示 profile 元数据记录，liveHandshake 是 not_checked；还需在目标 profile 的 chrome://extensions 核实扩展来源、启用状态和 ID。已有扩展且 ID、profile 和桥接有效时直接复用；扩展缺失时，从 prepare 返回的 extensionAssets 加载扩展。旧加载位置仍有效时不要仅因出现新资源路径而强制重装；确需改加载路径时重新读取目标 profile 中的实际 ID，再配置桥接。继续完成 install-bridge、connect 和 status，以真实握手与登录检查确认就绪。",
+    "Skill 安装后读取完整 SKILL.md 和 references，运行 prepare，再运行普通 diagnose；先处理顶层 nextAction 并重新诊断。runtime 描述包内资源版本，status.versions 显示 CLI、host 和扩展的实际版本，unknown 表示该组件未提供版本。currentNode 是运行 CLI 的 Node，bridge.node / bridge.nodeVersion 是桥接使用的 Node。目标扩展 ID 已确认且无需指定 profile 时，运行 `install-bridge --extension-id <extension-id>`；只有需要指定 Chrome 用户时才加 `--profile <目录名或名称>`。多个用户时先让我选择，不读取 Local State 来推测选择。桥接未注册但目标 profile 和扩展 ID 已知时，用 `diagnose --profile <directory-or-unique-name> --extension-id <extension-id>` 做成对的只读候选检查；candidate.nextAction 是候选项的具体动作，若同时存在顶层 nextAction，先处理顶层项。candidate.status 仅表示 profile 元数据记录，liveHandshake 是 not_checked；还需在目标 profile 的 chrome://extensions 核实扩展来源、启用状态和 ID。已有扩展且 ID、profile 和桥接有效时直接复用；扩展缺失时，从 prepare 返回的 extensionAssets 加载扩展。旧加载位置仍有效时不要仅因出现新资源路径而强制重装；确需改加载路径时重新读取目标 profile 中的实际 ID，再配置桥接。配对时运行 `pairing-info`，将输出的配对码粘贴到扩展的 Agent 设置表单，再运行 connect 和 status，以真实握手与登录检查确认就绪。",
     "若仅缺少桌面操作能力但仍能在目标机器读写文件、运行命令并下载 Release，先完成下载、校验和解压，再交接最短的人工加载步骤；如果没有目标机文件/命令能力，就说明哪些准备无法代办，不要声称已完成。首次打开、系统授权、扫码和验证码由我完成；普通可逆安装沿用我当前任务中的授权，不重复询问。",
     "",
-    extensionId,
+    `当前页面运行中的扩展 ID：${runtimeExtensionId || "unknown"}（以目标 Chrome 中实际安装的扩展为准）`,
     `Chrome 网上应用店公开版 ID：${STORE_EXTENSION_ID}`,
     "",
     "隐私边界：不要请求、复制或公开 Cookie、登录凭据、配对 secret 或 generalToken，也不要把它们写入公共日志。解析产生的临时媒体链接仅用于本次视频展示或下载，不写入公共日志。",
@@ -291,4 +354,5 @@ if (typeof document !== "undefined") {
   void startAgent();
   initializeAIDownloadPrompt();
   initializeBridgeConnectionStatus();
+  initializeManualPairing();
 }

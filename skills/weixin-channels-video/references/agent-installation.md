@@ -46,8 +46,8 @@ Vercel `skills` CLI 的 Agent 清单包含 `codex`、`claude-code`、`trae`、`t
 
 这些步骤由 `SKILL.md` 中的共享流程执行；本节只定义宿主、平台和权限差异，不复制解析或桥接业务规则。
 
-1. **当前扩展页 → Skill：** 页面里的运行时扩展 ID 和 Profile 仅作线索。先确认 Agent 和 Chrome 在同一目标机器，再保留或安装 Skill。执行 `prepare` 后，按已选 profile 和本机查询到的 ID 运行 `diagnose --profile <directory-or-unique-name> --extension-id <extension-id>`。两个选项必须成对提供；此只读检查只查看 Chrome profile 元数据，不读桥接配置、不做实时握手。`candidate.status` 只描述记录状态，须在目标 profile 的 `chrome://extensions` 核实来源、启用情况和实际 ID 后才复用扩展。
-2. **已安装 Skill → 扩展：** 先运行普通 `diagnose`，处理顶层单项 `nextAction` 指明的 Chrome/Node、profile/扩展、注册/配对或连接事项，再重新诊断。若运行候选诊断，候选动作会提升为顶层 `nextAction`，排在 Chrome/Node 阻断项之后、未配置桥接的泛化动作之前；存在两者时先处理顶层项。唯一 profile 直接使用；多个且用户未选时只询问一次，记住选择并用于所有后续命令。不要逐个尝试账号，不创建或改写 profile。扩展缺失时运行 `prepare` 并使用其 `extensionAssets` 返回的绝对目录作为持久加载位置。
-3. **换机且两者都缺失：** 先安装完整 Skill 并读取其 references；再用 Release 获取和校验运行资源；按目标机实际 Chrome profile 检查/安装扩展。来源页面 ID、旧机器 profile 名和路径只作线索，不能代替目标机核实。安装新扩展后从目标 profile 的 `chrome://extensions` 取得实际 ID，再以候选诊断核对 profile 元数据；诊断状态不是实时握手，最终仍通过 `install-bridge`、`connect`、`status` 验证。
+1. **当前扩展页 → Skill：** 页面显示的运行时扩展 ID 和 Profile 仅作线索。先确认 Agent 与 Chrome 在同一目标机器，再保留或安装 Skill。扩展 ID 以目标 Chrome 实际加载的版本为准；商店稳定 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`，GitHub Release 不代表商店已更新，解压安装则核对当前运行时的 `runtime.id`。
+2. **已安装 Skill → 扩展：** 先运行普通 `diagnose` 并按顶层 `nextAction` 处理连接问题。profile 是可选项；无 profile 时用 `install-bridge --extension-id <ID>` 注册，不枚举 Chrome 用户数据。运行 `pairing-info`，让用户在日常 Chrome 扩展的 Agent 设置中填入 `sessionId` 并保存，再用 `connect`、`status` 确认握手与登录。只有按显示名称选择用户时才需要 `list-profiles` 或候选 `diagnose --profile <name> --extension-id <ID>`；已知 profile 目录可直接引用。metadata 读取失败不阻止手动配对，也不应盖过已成功的握手。
+3. **换机且两者都缺失：** 先安装完整 Skill 并读取其 references；再用 Release 获取和校验运行资源；按目标机实际 Chrome 确认或安装扩展。来源页面 ID、旧机器 profile 名和路径只作线索。注册桥接、在日常 Chrome 中手动配对，最终通过 `connect` 和 `status` 验证实际握手。
 
-三种入口最终都按 `SKILL.md` 完成扩展复用或安装、桥接注册、`connect` 和 `status`。注册/连接必须以实际诊断和握手结果为准。首次打开、系统授权、登录、扫码或验证码由用户完成；在现有授权范围内且工具可用的普通安装/文件准备直接代办。若只有桌面操作工具不可用，但仍能在目标机器读写文件和执行命令，则先下载、校验、解压并给出所选 profile、真实绝对路径及最短人工加载步骤；如果 Agent 无法在目标机器读写文件、运行命令或取得 Release 包，不能声称已完成这些准备，只交接需要用户执行的最短步骤。
+三种入口最终都按 `SKILL.md` 完成扩展复用或安装、桥接注册、配对、`connect` 和 `status`。Chrome profile metadata 查询仅为按名称选择的辅助功能，不是安装或配对前提。macOS 注册仍需写入当前用户的 Chrome NativeMessagingHosts；若该写入被系统阻止，只说明这项写入需要的最小临时授权。metadata 读取受限时可直接手动配对，不要求完整磁盘访问或关闭沙箱。Chrome 冷启动可能被沙箱阻止，手动打开日常 Chrome 配对是可用的恢复路径。首次打开、系统授权、登录、扫码或验证码由用户完成；若 Agent 无法在目标机器读写文件、运行命令或取得 Release 包，不能声称已完成这些准备，只交接最短人工步骤。

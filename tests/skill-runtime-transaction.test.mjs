@@ -154,6 +154,8 @@ test('Release preparation migrates legacy assets and rolls back checksum, protoc
     const prepared = await prepare();
     assert.equal(prepared.version, '0.2.0');
     assert.equal(prepared.extensionAssets, oldExtension);
+    assert.equal((await prepare()).version, '0.2.0');
+    assert.equal(await runtime.run(['status']), 0);
     const committedMarker = await readFile(join(cacheRoot, 'current.json'), 'utf8');
     assert.deepEqual(JSON.parse(committedMarker), {
       version: '0.2.0',

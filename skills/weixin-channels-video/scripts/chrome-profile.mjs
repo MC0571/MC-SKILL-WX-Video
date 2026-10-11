@@ -84,24 +84,6 @@ export async function inspectChromeProfile({
     return { state: 'metadata_unreadable', extension: 'unknown' };
   }
 
-  let localState;
-  try {
-    const localStatePath = join(userDataDir, 'Local State');
-    const localStateInfo = await lstat(localStatePath);
-    if (!localStateInfo.isFile() || localStateInfo.isSymbolicLink()) throw new Error();
-    const text = await readFile(localStatePath, 'utf8');
-    localState = JSON.parse(text);
-  } catch {
-    return { state: 'metadata_unreadable', extension: 'unknown' };
-  }
-  const profiles = localState.profile?.info_cache;
-  if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) {
-    return { state: 'metadata_unreadable', extension: 'unknown' };
-  }
-  if (!Object.hasOwn(profiles, profileDirectory)) {
-    return { state: 'not_found', extension: 'unknown' };
-  }
-
   if (typeof extensionId !== 'string' || !extensionId) {
     return { state: 'exists', extension: 'unknown' };
   }
@@ -138,6 +120,19 @@ export async function inspectChromeProfile({
 export async function selectChromeProfile(reference, userDataDir = defaultChromeUserDataDir()) {
   if (typeof reference !== 'string' || !reference.trim()) {
     throw new Error('Choose a Chrome profile with --profile.');
+  }
+  if (
+    reference !== '.' && reference !== '..' && !isAbsolute(reference) &&
+    !reference.includes('/') && !reference.includes('\\')
+  ) {
+    try {
+      const profileInfo = await lstat(join(userDataDir, reference));
+      if (profileInfo.isDirectory() && !profileInfo.isSymbolicLink()) {
+        return { directory: reference, name: reference, profileDirectory: join(userDataDir, reference) };
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw new Error('The requested Chrome profile could not be inspected.');
+    }
   }
   const profiles = await listChromeProfiles(userDataDir);
   const byDirectory = profiles.find((profile) => profile.directory === reference);

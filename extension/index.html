@@ -52,6 +52,17 @@
           检查完整提示词后，可复制并粘贴给 Agent；此面板不会自动执行下载。
         </p>
         <p id="bridge-connection-status" class="status bridge-connection-status" role="status" aria-live="polite" hidden></p>
+        <p class="extension-version">扩展版本：<span id="extension-version">unknown</span></p>
+        <p class="extension-version">CLI / host 版本：unknown。请让 AI 运行 <code>status</code> 查看实际版本。</p>
+        <p class="extension-version">本版支持协议：Native Messaging v1 / IPC v2。</p>
+        <p id="pairing-storage-status" class="status pairing-storage-status" role="status" aria-live="polite">配对信息存储状态：检查中。</p>
+        <form id="manual-pairing-form" class="manual-pairing-form" novalidate>
+          <label for="pairing-session-id">配对码</label>
+          <input id="pairing-session-id" name="sessionId" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="pairing-session-id-help" required>
+          <p id="pairing-session-id-help" class="pairing-help">请让 AI 运行 <code>pairing-info</code>，再将输出中的配对码粘贴到这里。</p>
+          <button class="primary-button" type="submit">连接本机程序</button>
+          <p id="manual-pairing-status" class="status" role="status" aria-live="polite"></p>
+        </form>
         <textarea id="ai-download-prompt-text" rows="12" readonly aria-label="提示词全文"></textarea>
         <p id="ai-prompt-copy-status" class="status ai-prompt-copy-status" role="status" aria-live="polite"></p>
         <button id="ai-download-prompt-copy" class="ai-prompt-copy" type="button">

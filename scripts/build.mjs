@@ -67,11 +67,13 @@ await build({
   entryPoints: [join(skill, 'scripts/cli.mjs')],
   outfile: join(skillOutput, 'scripts/cli.mjs'),
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  define: { __WCV_VERSION__: JSON.stringify(manifest.version) },
 });
 await build({
   entryPoints: [join(root, 'src/native-host.mjs')],
   outfile: join(skillOutput, 'scripts/native-host.mjs'),
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  define: { __WCV_VERSION__: JSON.stringify(manifest.version) },
 });
 await build({
   entryPoints: [join(extensionSource, 'background.mjs')],

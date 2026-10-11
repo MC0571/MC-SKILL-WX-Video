@@ -51,14 +51,14 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-首次使用，Skill 会准备带校验的运行资源、核实选定的 Chrome 用户和扩展，并协助注册本地桥接。安装和权限授权按实际缺失项完成；已安装且连接有效时直接复用。多个 Chrome 用户时，由你选择，不逐个尝试账号。
+首次使用，Skill 会准备带校验的运行资源并注册本地桥接。能读取 Chrome profile 信息时可由你选择目标用户；读取受限时仍可手动配对，不需要反复重装或扩大权限。已安装且连接有效时直接复用。多个 Chrome 用户时，由你选择，不逐个尝试账号。
 
 需要自己操作时，在安装后的 Skill 目录执行以下命令。先按 reference 确认 OS、实际 Shell/执行环境、Node 与目标 Chrome 在同一台机器；Windows 原生与 WSL 的命令和 Node 路径不可混用：
 
 ```sh
 node scripts/run.mjs prepare
-node scripts/run.mjs list-profiles
-node scripts/run.mjs install-bridge --extension-id '替换为当前扩展ID' --profile 'Chrome 用户名称或目录名'
+node scripts/run.mjs install-bridge --extension-id '替换为当前扩展ID'
+node scripts/run.mjs pairing-info
 node scripts/run.mjs connect
 node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
@@ -66,13 +66,15 @@ node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链�
 
 商店扩展 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`。开发者模式安装的 ID 可能不同，请从目标 Chrome profile 的扩展详情取得，或使用页面生成的提示词作为待核实线索。
 
+需要指定 Chrome 用户时，在 `install-bridge` 命令后添加 `--profile '目录名或名称'`；不指定时使用手动配对流程。
+
 `prepare` 为从仓库安装的 Skill 获取最新正式 Release，验证 SHA256 和运行协议；普通命令复用本地资源，首次没有资源时自动准备。Release Skill 包已携带所需资源，可离线准备。首次下载资源需要已发布的正式 Release 和网络连接。
 
-升级 Skill 后先执行 `prepare`，再检查 `status`。同一扩展 ID、profile 和 Chrome 用户数据目录中的 IPC v2 配置会保留配对；来自 0.1.1 的旧 IPC v1 配置首次迁移时会自动轮换本地会话，之后由 `connect` 重新配对一次。两种升级都不需要重复安装扩展或重新选择 profile。连接失败时按 `diagnose` 返回的 `nextAction` 处理。
+升级 Skill 后先执行 `prepare`，再检查 `status`。首次使用或需要重新配对时运行 `pairing-info`，将 `sessionId` 填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。`connect`、`diagnose` 与 `status` 用于连接及登录状态核实；连接失败时按 `diagnose` 返回的 `nextAction` 处理。profile 可选；不指定时不会枚举 Chrome 用户数据。
 
 下载默认以视频标题命名。`--filename '视频.mp4'` 可指定 Chrome 下载目录内的相对文件名。AI 会在 Chrome 确认完成后展示视频、各版本链接和最终路径。任务超时或断连后不会自动重发，避免重复下载。
 
-扩展“Agent 设置”面板显示本地程序的连接阶段和具体恢复建议。浏览器显示已连接后，AI 仍需确认连接和登录状态。连接失败时执行 `node scripts/run.mjs diagnose`，先处理返回的单项 `nextAction` 并重新诊断。桥接注册前也可用 `diagnose --profile <目录名或唯一名称> --extension-id <ID>` 只读核对候选扩展记录；它不验证实时握手。登录失效时在同一 Chrome 用户重新登录；网络检查失败不代表未登录。更多恢复步骤见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+扩展“Agent 设置”面板显示实际扩展版本、本地程序的连接阶段和恢复建议。若尚未配对，运行 `pairing-info`，将输出的配对标识填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。配对标识不是 IPC 密钥，常规日志不输出它。商店优先使用稳定扩展 ID `jdecfnemmnhbpamcfhmgjkcphgomgjoe`；解压安装请核对当前运行时的实际 ID，GitHub 包版本也不代表商店已生效版本。登录失效时在同一 Chrome 用户重新登录；网络检查失败不代表未登录。更多恢复步骤见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
 
 ## 自部署 API
 

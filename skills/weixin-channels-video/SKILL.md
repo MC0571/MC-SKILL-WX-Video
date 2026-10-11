@@ -25,7 +25,7 @@ node <skill-root>/scripts/run.mjs prepare
 
 `prepare` 成功后输出 JSON，其中 `version`、`runtimeCLI` 和 `extensionAssets` 分别是资源版本、实际 CLI 路径和扩展目录。协议不兼容、资源缺失、下载失败或校验失败时停止并报告错误；升级失败不会切换当前缓存。准备资源不会改动 Chrome、桥接注册或配对。
 
-Skill 更新后执行 `prepare`，再运行 `status` 检查桥接与扩展的 Native Messaging 握手。runner 与打包运行资源通过 `runtimeProtocol` 检查；Chrome 扩展与 Native Messaging host 保持 wire v1，桥接客户端与 host 的本地 IPC 使用 v2。首次从旧桥接配置升级到 IPC v2 时，`install-bridge` 自动迁移配置、轮换本地 IPC secret 并重新配对一次；此后同一扩展 ID、profile 和 Chrome 用户数据目录中的 v2 桥接升级会保留配对。身份变化时需要重新配对。
+Skill 更新后执行 `prepare`，再运行 `status` 检查桥接与扩展的 Native Messaging 握手。版本分别报告实际 CLI、host 和扩展版本；旧 host 或扩展缺少版本信息时对应字段为 `unknown`，不能据此认定组件已同步。配对身份变化时需重新配对。`pairing-info` 会显式输出配对标识 `sessionId`，仅用于填入扩展的 Agent 设置；它不是 IPC secret，常规日志不输出该标识。
 
 ## 检测与恢复连接
 
@@ -56,11 +56,13 @@ node <skill-root>/scripts/run.mjs diagnose --profile <profile-directory-or-name>
 只报告与当前故障有关的已确认事实和应对方式，不把完整 JSON 当作用户指引。普通诊断中的 `unknown` 表示无法确认；`recorded_unknown` 表示存在扩展记录但无法确认是否启用；`missing_or_id_mismatch_possible` 表示记录缺失，也可能是 ID 不匹配。不能仅凭候选元数据或连接超时断言扩展未安装。
 
 - **Chrome 未安装或版本不足**：提供 [Chrome 官方下载入口](https://www.google.com/chrome/) 和安装/更新步骤；获得授权且有桌面工具时协助安装。首次运行、许可确认、系统授权和登录由用户完成。安装位置、版本或启动原因无法确认时说明已知信息，不把启动失败统一说成未安装。
-- **Chrome 未运行**：已有桥接配置时执行 `connect`，自动后台启动所选 profile 的正常 Chrome 并等待通信就绪。启动进程不等于扩展已连通。首次/修复配对可能短暂打开一个初始化页，完成后自行关闭；日常连接和任务不需要保留插件页。
-- **profile 未选择、已不存在或元数据无法读取**：复用用户已选定的 profile；需要选择时运行 `list-profiles`。唯一 profile 直接使用；多个 profile 且用户未指定时只询问一次，记录选择并在后续命令复用，不逐个尝试登录，不创建或改写 profile。来源页面的 ID/Profile 只作线索，以目标机器和所选 profile 中的实际记录为准。
+- **Chrome 未运行**：仅在配置了目标 profile 时，`connect` 才会尝试直接启动该 Chrome 并等待握手；启动不等于扩展已连通。无 profile 时 `connect` 只等待手动配对，不启动 Chrome。冷启动若受沙箱阻止，改为用户打开日常 Chrome 并手动配对。
+- **profile 未选择或元数据无法读取**：profile 可选。无 profile 时注册桥接不枚举 Chrome 用户数据；让用户打开日常 Chrome，在扩展 Agent 设置中输入 `pairing-info` 输出的 `sessionId`，保存后自动重连。显式指定 profile 时目录名可直接引用；按显示名称查找才需要 Chrome 元数据。读取权限错误时可手动配对，不反复重装或扩大权限。
 - **扩展记录缺失、被禁用或 ID 可能不符**：在选定 profile 的 `chrome://extensions` 中核实来源、ID 和启用状态。已安装时复用并修正桥接配置；用户主动禁用时由用户决定是否恢复。只有确认缺失后才进入安装流程。
 - **桥接未注册、文件缺失、配置过期或配对不匹配**：依据具体诊断检查桥接注册、host、launcher、Node.js 与配对。已有授权范围内可重新注册本工具的桥接；不覆盖无关文件。配置有效但未连接时执行 `connect`，不先重装。无法确认或恢复失败时给出具体错误类别与下面的手动步骤。
 - **通信正常但元宝未登录或登录失效**：请用户在同一 Chrome profile 中登录，再执行 `status`。`LOGIN_CHECK_FAILED` 表示无法可靠检查登录；网络或响应失败不能当作未登录，也不通过重装处理。
+
+按故障阶段报告：资源准备、Chrome 启动、扩展配对、Native Messaging 连接、元宝登录。先解决实际失败的阶段，再检查后续状态；登录检查失败不能改报为认证失效。
 
 恢复只发生在提交任务之前。解析或下载任务发出后若断连、超时，不自动重发；Chrome 下载可能仍在进行，应报告实际状态并引导检查扩展的下载记录。
 
@@ -68,11 +70,11 @@ node <skill-root>/scripts/run.mjs diagnose --profile <profile-directory-or-name>
 
 Chrome 缺失且需要手动安装时，按 [Google 官方安装指引](https://support.google.com/chrome/answer/95346) 选择目标 OS 对应的安装包，完成首次启动后重新诊断。已有 Chrome 的启动问题按实际错误排查；不猜测安装路径，也不因启动失败就重复安装。
 
-确认缺少安装时，先运行 `node <skill-root>/scripts/run.mjs prepare`，并使用结果中 `extensionAssets` 给出的实际绝对目录准备操作步骤，再取得安装与权限授权。说明插件可访问元宝和视频号站点、管理本项目的下载、为固定视频详情请求设置请求头，并通过 `nativeMessaging` 与本地桥接通信；`storage` 保存此 profile 的配对，`offscreen` 承接隐藏 iframe 与旧配对迁移，`alarms` 用于后台重连。首次配置后自动连接，无页面开关。桥接注册在当前用户的 Chrome NativeMessagingHosts；本地配置和 IPC 通道按目标 OS 限制为当前用户可访问，IPC secret 不进入 Native Messaging 握手消息或日志。Cookie 不交给桥接或 Agent。
+确认缺少安装时，先运行 `node <skill-root>/scripts/run.mjs prepare`，并使用结果中 `extensionAssets` 给出的实际绝对目录准备操作步骤，再取得安装与权限授权。说明插件可访问元宝和视频号站点、管理本项目的下载、为固定视频详情请求设置请求头，并通过 `nativeMessaging` 与本地桥接通信；`storage` 保存配对信息，`offscreen` 承接隐藏 iframe 与旧配对迁移，`alarms` 用于后台重连。桥接注册在当前用户的 Chrome NativeMessagingHosts；本地配置和 IPC 通道按目标 OS 限制为当前用户可访问，IPC secret 不进入 Native Messaging 握手消息或日志。Cookie 不交给桥接或 Agent。
 
 授权可来自本次或仍有效的既有委托，对象与权限范围相同时不重复请求。授权后，有桌面操作工具就帮助在选定 profile 的 `chrome://extensions` 中启用开发者模式并加载 `extensionAssets` 指向的扩展目录；没有该能力就提供此绝对路径和最短步骤。复用已经安装的本项目扩展时核对来源与权限，不重复安装。
 
-列出 profile 只读取 Chrome 元数据；多个 profile 且用户未指定时，只询问一次并在后续步骤复用该选择：
+需要按 Chrome 显示名称选择 profile 时，才可选地列出 profile；手动配对不依赖此步骤：
 
 ```sh
 node <skill-root>/scripts/run.mjs list-profiles
@@ -81,21 +83,24 @@ node <skill-root>/scripts/run.mjs list-profiles
 使用用户已选定的 profile；有多个且用户未指定时请用户选择，不逐个尝试登录。取得扩展详情中的 ID 后执行：
 
 ```sh
-node <skill-root>/scripts/run.mjs install-bridge --extension-id <extension-id> --profile <directory-or-name>
+node <skill-root>/scripts/run.mjs install-bridge --extension-id <extension-id>
+node <skill-root>/scripts/run.mjs pairing-info
 node <skill-root>/scripts/run.mjs connect
 node <skill-root>/scripts/run.mjs status
 ```
 
-后台持有连接和任务，Chrome 启动或扩展重载后恢复此 profile 的配对；关闭、刷新或不打开插件页面均可使用 Skill。`connect` 复用已有连接，必要时启动 Chrome 或完成首次/修复配对；进程启动和配对保存后仍需等待桥接握手成功。已配置但未连接时直接连接，无需再次安装。旧页面 localStorage 配对自动迁移，配对不在 profile 之间共享。桥接程序升级或安装时使用的 Node.js 可执行文件位置变化后重新注册桥接。
+将 `pairing-info` 输出的 `sessionId` 输入日常 Chrome 扩展 Agent 设置并保存；页面会自动重连。无 profile 时 `connect` 只等待此手动配对，不启动 Chrome，也不枚举 profile metadata。指定 profile 时才会尝试一次启动所选 Chrome 并等待连接；macOS 直接启动 Chrome 实际程序。桥接注册需要写入当前用户的 Chrome NativeMessagingHosts；若系统拒绝该写入，只说明该路径所需的最小临时文件访问授权。metadata 读取受限时仍可手动配对，不要求完整磁盘访问或关闭沙箱。桥接程序升级或安装时使用的 Node.js 可执行文件位置变化后重新注册桥接。
+
+需要指定 Chrome 用户时，在 `install-bridge` 命令后添加 `--profile <目录名或名称>`；不指定时走手动配对。
 
 安装失败或没有桌面代操作能力时，报告失败步骤与错误类别，并提供完整的手动指引：
 
 1. 在选定 Chrome profile 打开 `chrome://extensions`，开启“开发者模式”。
 2. 点击“加载已解压的扩展程序”，选择 `prepare` 结果中 `extensionAssets` 给出的实际绝对目录，确认扩展已启用。已有安装只核对来源、ID 与状态，避免重复加载。
-3. 打开扩展详情，复制扩展 ID；运行上述 `install-bridge` 命令，填入该 ID 和选定 profile 的目录名。
-4. 运行 `connect` 和 `status`。连接失败时运行 `diagnose`，按具体原因检查；元宝未登录时在同一 profile 登录再检查。
+3. 打开扩展详情，复制当前运行扩展 ID；运行 `install-bridge --extension-id <ID>`。仅在需要指定 Chrome 用户时附加 `--profile <目录名>`。
+4. 运行 `pairing-info`，在扩展 Agent 设置中输入输出的 `sessionId` 并保存；再运行 `connect` 和 `status`。连接失败时运行 `diagnose`，按错误阶段处理；元宝未登录时在同一 Chrome 用户登录再检查。
 
-若系统策略、目录权限或工具审批阻止安装，明确说明阻止的是哪一步；不能通过 Cookie 提取、远程调试或其他入口绕过。
+若系统策略或目录权限阻止安装，明确说明被阻止的步骤。macOS 仅在 NativeMessagingHosts 写入确实被拒绝时，解释该路径所需的最小临时文件访问授权；profile metadata 读取失败可直接手动配对，不要求完整磁盘访问或关闭沙箱。不能通过 Cookie 提取、远程调试或其他入口绕过。
 
 元宝未登录时，请用户在同一 Chrome profile 中登录，再检查状态。扫码、验证码和必须由用户完成的系统确认交给用户；工具允许代操作且已授权的普通安装步骤继续完成。
 

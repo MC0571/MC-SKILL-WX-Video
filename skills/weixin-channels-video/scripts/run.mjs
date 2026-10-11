@@ -97,13 +97,20 @@ async function assertPrivateCacheDirectory(path) {
   }
 }
 
-async function createOrAssertCacheDirectory(path) {
+async function createOrAssertCacheDirectory(path, recursive = false) {
   let newlyCreated = false;
   try {
-    await mkdir(path, { recursive: false, mode: 0o700 });
-    newlyCreated = true;
+    await lstat(path);
   } catch (error) {
-    if (error.code !== "EEXIST") throw error;
+    if (error.code !== "ENOENT") throw error;
+    try {
+      await mkdir(path, { recursive, mode: 0o700 });
+      newlyCreated = true;
+    } catch (createError) {
+      // Another process may have created the directory; verify the filesystem state below.
+      try { await lstat(path); }
+      catch { throw createError; }
+    }
   }
 
   const info = await lstat(path);
@@ -416,9 +423,7 @@ async function ensureCacheRoot() {
   if (process.platform === "win32") {
     await createOrAssertCacheDirectory(appCacheRoot);
   } else {
-    await mkdir(appCacheRoot, { recursive: true, mode: 0o700 });
-    const appInfo = await lstat(appCacheRoot);
-    if (!appInfo.isDirectory() || appInfo.isSymbolicLink()) fail("工具缓存目录不安全。");
+    await createOrAssertCacheDirectory(appCacheRoot, true);
   }
   await createOrAssertCacheDirectory(LEGACY_CACHE_ROOT);
   await createOrAssertCacheDirectory(CACHE_ROOT);

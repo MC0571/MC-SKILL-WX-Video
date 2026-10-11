@@ -165,6 +165,18 @@ test("IPC2 sessions use private keys, fresh nonces, and endpoint-specific pipe n
   assert.notEqual(windowsPipeName("C:\\Users\\Example\\AppData", SESSION_1), windowsPipeName("C:\\Users\\Other\\AppData", SESSION_1));
 });
 
+test("extension status reports its installed manifest version", async () => {
+  const handler = createAgentCommandHandler({
+    chromeApi: { runtime: { getManifest: () => ({ version: "0.2.2" }) } },
+    loginChecker: async () => ({ status: "authenticated" }),
+  });
+  assert.deepEqual(await handler({ id: REQUEST_ID, command: "status" }), {
+    id: REQUEST_ID,
+    ok: true,
+    result: { login: "authenticated", versions: { extension: "0.2.2" } },
+  });
+});
+
 test("Windows pipe transport close waits for PowerShell exit and settles startup", async () => {
   class FakeChild extends EventEmitter {
     constructor() {
@@ -361,6 +373,52 @@ test("installer uses profile metadata only and writes private, exact user-level 
   });
 });
 
+test("installer supports manual pairing without profile metadata and preserves its session on upgrade", async () => {
+  await withShortTempDir(async (root) => {
+    const chromeRoot = join(root, "Chrome User Data");
+    const appSupportDir = join(root, "private", "bridge");
+    const nativeHostSource = join(root, "native-host-bundle.mjs");
+    await mkdir(chromeRoot, { recursive: true });
+    await writeFile(nativeHostSource, "// synthetic host bundle\n");
+    const options = {
+      extensionId: EXTENSION_ID,
+      appSupportDir,
+      chromeUserDataDir: chromeRoot,
+      registryDir: join(chromeRoot, "NativeMessagingHosts"),
+      nodeExecutable: "/Applications/Node Runtime/bin/node",
+      nativeHostSource,
+      platform: "darwin",
+    };
+    const installed = await installBridge(options);
+    assert.equal(installed.profile, null);
+    assert.equal(Object.hasOwn(installed.config, "profileDirectory"), false);
+    const sessionId = await readBridgeSession(installed.config);
+    assert.match(sessionId, /^[0-9a-f-]{36}$/);
+    assert.equal((await readBridgeInstallation({ appSupportDir })).profileDirectory, undefined);
+    assert.equal(await readBridgeSession((await installBridge(options)).config), sessionId);
+  });
+});
+
+test("installer reports Chrome registration access failures as a distinct setup stage", async () => {
+  await withShortTempDir(async (root) => {
+    const chromeRoot = join(root, "Chrome User Data");
+    const appSupportDir = join(root, "private", "bridge");
+    const nativeHostSource = join(root, "native-host-bundle.mjs");
+    const registryDir = join(chromeRoot, "NativeMessagingHosts");
+    await mkdir(chromeRoot, { recursive: true });
+    await writeFile(registryDir, "unavailable");
+    await writeFile(nativeHostSource, "// synthetic host bundle\n");
+    await assert.rejects(installBridge({
+      extensionId: EXTENSION_ID,
+      appSupportDir,
+      chromeUserDataDir: chromeRoot,
+      registryDir,
+      nativeHostSource,
+      platform: "darwin",
+    }), (error) => error instanceof BridgeSetupError && error.code === "HOST_REGISTRATION_UNAVAILABLE");
+  });
+});
+
 test("installer refuses an unrelated Native Messaging host registration", async () => {
   await withShortTempDir(async (root) => {
     const chromeRoot = await chromeProfileFixture(root);
@@ -461,6 +519,30 @@ test("Native Messaging host authenticates the local client, forwards one command
   });
 });
 
+test("status adds the host version while accepting an older extension status result", async () => {
+  await withShortTempDir(async (root) => {
+    const fixture = await createHostFixture(root);
+    try {
+      fixture.input.write(Buffer.from(encodeBridgeFrame({ type: "hello", version: 1, sessionId: SESSION_1 })));
+      assert.deepEqual(await fixture.outputFrames.next(), { type: "ready", version: 1 });
+      const command = { id: REQUEST_ID, command: "status" };
+      const responsePromise = requestBridge(fixture.config, fixture.sessionInfo, command);
+      assert.deepEqual(await fixture.outputFrames.next(), command);
+      fixture.input.write(Buffer.from(encodeBridgeFrame({ id: REQUEST_ID, ok: true, result: { login: "authenticated" } })));
+      assert.deepEqual(await responsePromise, { login: "authenticated", versions: { host: "unknown" } });
+
+      const nextId = "423e4567-e89b-42d3-a456-426614174000";
+      const versionedCommand = { id: nextId, command: "status" };
+      const versionedResponse = requestBridge(fixture.config, fixture.sessionInfo, versionedCommand);
+      assert.deepEqual(await fixture.outputFrames.next(), versionedCommand);
+      fixture.input.write(Buffer.from(encodeBridgeFrame({ id: nextId, ok: true, result: { login: "authenticated", versions: { extension: "0.2.2" } } })));
+      assert.deepEqual(await versionedResponse, { login: "authenticated", versions: { extension: "0.2.2", host: "unknown" } });
+    } finally {
+      await fixture.host.close();
+    }
+  });
+});
+
 test("CLI connection sessions stay private and status distinguishes disconnected from login failure", async () => {
   const config = { extensionId: EXTENSION_ID, profileDirectory: "Profile 3", chromeUserDataDir: "/tmp/chrome", appSupportDir: "/tmp/bridge" };
   const outputs = [];
@@ -473,14 +555,14 @@ test("CLI connection sessions stay private and status distinguishes disconnected
     stdout: (value) => outputs.push(value),
     readInstallation: async () => null,
   }), 0);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "unconfigured", connection: "disconnected", login: "not_checked" });
+  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "unconfigured", connection: "disconnected", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
 
   assert.equal(await runCli(["status"], {
     stdout: (value) => outputs.push(value),
     readInstallation: async () => config,
     readSession: async () => null,
   }), 0);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "disconnected", login: "not_checked" });
+  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "disconnected", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
 
   assert.equal(await runCli(["status"], {
     stdout: (value) => outputs.push(value),
@@ -488,7 +570,7 @@ test("CLI connection sessions stay private and status distinguishes disconnected
     readSession: async () => SESSION_INFO,
     bridgeRequest: async () => { throw new BridgeError("LOGIN_CHECK_FAILED", "ignored"); },
   }), 1);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "connected", login: "failed:LOGIN_CHECK_FAILED" });
+  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "connected", login: "failed:LOGIN_CHECK_FAILED", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
 
   assert.equal(await runCli(["status"], {
     stdout: (value) => outputs.push(value),
@@ -496,7 +578,7 @@ test("CLI connection sessions stay private and status distinguishes disconnected
     readSession: async () => SESSION_INFO,
     bridgeRequest: async () => { throw new BridgeError("BRIDGE_BUSY", "ignored"); },
   }), 1);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "failed:BRIDGE_BUSY", login: "not_checked" });
+  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "failed:BRIDGE_BUSY", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
 
   assert.equal(await runCli(["connect"], {
     stdout: (value) => outputs.push(value),
@@ -505,19 +587,18 @@ test("CLI connection sessions stay private and status distinguishes disconnected
     launch: async (bridgeConfig, pairedSession) => {
       launched ??= bridgeConfig;
       assert.equal(bridgeConfig, config);
-      if (launches.length === 0) assert.equal(pairedSession, undefined);
-      else assert.equal(pairedSession, SESSION_INFO.sessionId);
+      assert.equal(pairedSession, SESSION_INFO.sessionId);
       launches.push(pairedSession);
     },
     bridgeWait: async (_config, sessionInfo, options) => {
       waitTimeouts.push(options.timeoutMs);
-      if (waitTimeouts.length < 3) { waited ??= sessionInfo; throw new BridgeError("BRIDGE_TIMEOUT", "ignored"); }
+      if (waitTimeouts.length === 1) { waited ??= sessionInfo; throw new BridgeError("BRIDGE_TIMEOUT", "ignored"); }
     },
   }), 0);
   assert.equal(launched, config);
   assert.deepEqual(waited, SESSION_INFO);
-  assert.deepEqual(launches, [undefined, SESSION_INFO.sessionId]);
-  assert.deepEqual(waitTimeouts, [500, 5_000, 30_000]);
+  assert.deepEqual(launches, [SESSION_INFO.sessionId]);
+  assert.deepEqual(waitTimeouts, [500, 30_000]);
   assert.equal(outputs.pop(), "Connected to the Chrome extension.");
   assert.equal(errors.length, 0);
   assert.equal(outputs.some((value) => value.includes(SESSION_1)), false);
@@ -576,10 +657,10 @@ test("CLI auto-connects before a download and never retries a task after timeout
     },
   });
   assert.equal(exitCode, 1);
-  assert.deepEqual(launches, [undefined]);
+  assert.deepEqual(launches, [SESSION_INFO.sessionId]);
   assert.equal(bridgeWaitCount, 2);
   assert.equal(taskRequestCount, 1);
-  assert.deepEqual(errors, [`BRIDGE_TIMEOUT: ${BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT}`]);
+  assert.deepEqual(errors, [`bridge-authentication BRIDGE_TIMEOUT: ${BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT}`]);
 });
 
 test("agent returns only selected video fields and waits for Chrome's real download outcome", async () => {
@@ -733,6 +814,7 @@ test("socket access failures stay distinct from disconnected bridge status and r
     configuration: "configured",
     connection: "failed:BRIDGE_CONNECTION_FAILED",
     login: "not_checked",
+    versions: { cli: "unknown", host: "unknown", extension: "unknown" },
   });
   assert.equal(stderr.length, 0);
   assert.equal(JSON.stringify(stdout).includes("EACCES"), false);
@@ -746,7 +828,7 @@ test("socket access failures stay distinct from disconnected bridge status and r
     bridgeWait: async () => { throw new BridgeError("BRIDGE_CONNECTION_FAILED", rawError.message); },
   });
   assert.equal(connectStatus, 1);
-  assert.equal(connectErrors[0], `BRIDGE_CONNECTION_FAILED: ${BRIDGE_ERROR_MESSAGES.BRIDGE_CONNECTION_FAILED}`);
+  assert.equal(connectErrors[0], `bridge-authentication BRIDGE_CONNECTION_FAILED: ${BRIDGE_ERROR_MESSAGES.BRIDGE_CONNECTION_FAILED}`);
   assert.equal(connectErrors[0].includes("EACCES"), false);
 });
 
@@ -772,7 +854,7 @@ test("waitForBridge rejects a mismatched IPC secret and connect does not rotate 
     await new Promise((resolve) => server.close(resolve));
 
     assert.equal(exitCode, 1);
-    assert.equal(errors[0], `BRIDGE_SESSION_MISMATCH: ${BRIDGE_ERROR_MESSAGES.BRIDGE_SESSION_MISMATCH}`);
+    assert.equal(errors[0], `bridge-authentication BRIDGE_SESSION_MISMATCH: ${BRIDGE_ERROR_MESSAGES.BRIDGE_SESSION_MISMATCH}`);
     assert.equal(launchedChrome, false);
   });
 });
