@@ -143,7 +143,7 @@ npm run release:package
 
 已有 GitHub Release、商店提交因前一版本审核或校验失败而中止时，在 main 手动运行 Release 并启用 `submit_existing_release`。该模式使用当前 manifest 版本，要求正式 Release 和全部资产已存在，重新构建的三个归档及 `SHA256SUMS` 必须与已发布资产逐字节相同，之后才向商店提交。它允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
-商店条目 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`；审核上线后可从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。工作流成功表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
+商店条目 ID 为 `jdecfnemmnhbpamcfhmgjkcphgomgjoe`，可从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。工作流成功表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
 
 发布使用 Google Workload Identity Federation 获取短期访问令牌，不保存服务账号密钥。仓库 Actions Variables 配置 `GCP_WIF_PROVIDER`、`CWS_SERVICE_ACCOUNT`、`CWS_PUBLISHER_ID` 和 `CWS_ITEM_ID`；Google 身份条件只允许本仓库 main 的 `.github/workflows/release.yml`，事件限定为 `push` 和 `workflow_dispatch`。令牌使用 Chrome Web Store scope。商店服务账号的权限覆盖发布者的所有条目，工作流将目标限定为上述 Item ID。
 
