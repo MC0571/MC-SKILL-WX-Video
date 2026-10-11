@@ -16,7 +16,10 @@
 
 ## Chrome 扩展
 
-[Chrome Web Store 安装入口](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe)（商店审核上线后可用）。审核期间，可从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载扩展 ZIP，解压后在 `chrome://extensions` 开启开发者模式，选择“加载已解压的扩展程序”。
+可选择以下两种安装方式：
+
+- **商店安装**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 直接安装。商店版本受审核进度影响，可能落后于 GitHub Releases 或仓库代码。
+- **开发者模式安装**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip` 并解压，或按[构建说明](docs/architecture.md#构建与发布)自行构建，生成 `dist/extension/`。在 `chrome://extensions` 开启开发者模式，点击“加载已解压的扩展程序”，选择解压后的扩展目录或 `dist/extension/`（目录内应包含 `manifest.json`）。商店无法访问时，也可使用此方式安装。
 
 1. 在安装扩展的 Chrome 用户中登录 [腾讯元宝](https://yuanbao.tencent.com/)。
 2. 点击扩展图标，在打开的页面中粘贴分享链接并解析。
