@@ -27,12 +27,19 @@ function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
   const baseUrl = 'https://github.com/MC0571/weixin-channels-video/releases/download/v' + version;
   const archive = skillArchive([
     ['weixin-channels-video', '', '5'],
+    ['weixin-channels-video/assets', '', '5'],
+    ['weixin-channels-video/assets/extension', '', '5'],
+    ['weixin-channels-video/references', '', '5'],
     ['weixin-channels-video/scripts', '', '5'],
+    ['weixin-channels-video/SKILL.md', 'Skill installation instructions'],
+    ['weixin-channels-video/assets/extension/manifest.json', JSON.stringify({ version })],
+    ['weixin-channels-video/references/agent-installation.md', 'Agent installation guide'],
     ['weixin-channels-video/runtime.json', JSON.stringify({
       version,
       runtimeProtocol,
       minimumNodeVersion: '22.22.2',
     })],
+    ['weixin-channels-video/scripts/run.mjs', 'export {};'],
     ['weixin-channels-video/scripts/cli.mjs', 'export {};'],
     ['weixin-channels-video/scripts/native-host.mjs', 'export {};'],
   ]);
@@ -151,6 +158,12 @@ test('Release preparation leaves legacy extension files untouched and commits on
     assert.equal(prepared.version, '0.2.0');
     assert.equal(prepared.runtimeProtocol, 3);
     assert.equal('extensionAssets' in prepared, false);
+    const cachedRuntime = join(cacheRoot, '0.2.0');
+    assert.equal((await readdir(cachedRuntime)).sort().join(','), 'runtime.json,scripts');
+    assert.equal((await readdir(join(cachedRuntime, 'scripts'))).sort().join(','), 'cli.mjs,native-host.mjs');
+    await assert.rejects(lstat(join(cachedRuntime, 'SKILL.md')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(cachedRuntime, 'scripts', 'run.mjs')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(cachedRuntime, 'assets', 'extension')), { code: 'ENOENT' });
     assert.equal((await prepare()).version, '0.2.0');
     assert.equal(await runtime.run(['status']), 0);
     const committedMarker = await readFile(join(cacheRoot, 'current.json'), 'utf8');

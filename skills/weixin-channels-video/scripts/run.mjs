@@ -494,8 +494,7 @@ async function prepareFromRelease() {
       await unpackSkillArchive(archiveBytes, payload);
       const source = join(payload, "weixin-channels-video");
       runtime = await readRuntime(source, version, { requirePrivate: true });
-      await rename(source, destination);
-      runtime = { ...runtime, runtimeCLI: join(destination, "scripts", "cli.mjs") };
+      runtime = await cacheRuntime(source, runtime, "release");
     } finally {
       await rm(stage, { recursive: true, force: true });
     }
@@ -505,7 +504,7 @@ async function prepareFromRelease() {
   return materializeRuntime(runtime);
 }
 
-async function cachePackagedRuntime(runtime) {
+async function cacheRuntime(source, runtime, stagePrefix) {
   const destination = join(CACHE_ROOT, runtime.version);
   let destinationInfo;
   try { destinationInfo = await lstat(destination); }
@@ -518,12 +517,12 @@ async function cachePackagedRuntime(runtime) {
     return readRuntime(destination, runtime.version, { requirePrivate: true });
   }
 
-  const stage = await mkdtemp(join(CACHE_ROOT, ".package-" + runtime.version + "-"));
+  const stage = await mkdtemp(join(CACHE_ROOT, "." + stagePrefix + "-" + runtime.version + "-"));
   try {
     await secureNewCacheDirectory(stage);
     const scripts = join(stage, "scripts");
     await ensureNewCacheDirectory(scripts);
-    await copyCacheFile(join(SKILL_ROOT, "runtime.json"), join(stage, "runtime.json"));
+    await copyCacheFile(join(source, "runtime.json"), join(stage, "runtime.json"));
     await copyCacheFile(runtime.runtimeCLI, join(scripts, "cli.mjs"));
     await copyCacheFile(join(dirname(runtime.runtimeCLI), "native-host.mjs"), join(scripts, "native-host.mjs"));
     await readRuntime(stage, runtime.version, { requirePrivate: true });
@@ -553,7 +552,7 @@ async function packagedRuntime() {
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
   const runtime = await readRuntime(SKILL_ROOT);
   await ensureCacheRoot();
-  return cachePackagedRuntime(runtime);
+  return cacheRuntime(SKILL_ROOT, runtime, "package");
 }
 
 async function currentRuntime() {
