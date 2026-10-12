@@ -201,11 +201,11 @@ export async function discoverBridgeConnections(config, sessionInfo, {
   request = requestBridge,
   waitForLegacyBridge = waitForBridge,
   refreshLogin = false,
+  probeLegacy = true,
 } = {}) {
   const records = await readConnections(config, sessionInfo);
   const active = [];
   const currentRecords = records.filter((record) => record.nativeProtocol === 2);
-  const legacyRecords = records.filter((record) => record.nativeProtocol === 1);
   for (const record of currentRecords) {
     if (record.nativeProtocol !== 2) throw new BridgeError("BRIDGE_PROTOCOL_ERROR", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_ERROR);
     let status;
@@ -227,7 +227,7 @@ export async function discoverBridgeConnections(config, sessionInfo, {
     }
     active.push({ instanceId: record.instanceId, login: status.login, checkedAt: status.checkedAt, ...(status.error ? { error: status.error } : {}), versions: status.versions });
   }
-  if (active.length === 0 && legacyRecords.length > 0) {
+  if (active.length === 0 && probeLegacy) {
     try {
       await waitForLegacyBridge(config, sessionInfo, { timeoutMs: 200 });
       throw new BridgeError("BRIDGE_PROTOCOL_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_UNSUPPORTED);
@@ -254,6 +254,7 @@ export async function selectBridgeConnection(config, sessionInfo, {
     if (!selectedRecord) return { connection: null, selectedInstanceId };
     const connections = await discoverBridgeConnections(config, sessionInfo, {
       readConnections: async () => [selectedRecord], request, waitForLegacyBridge, refreshLogin,
+      probeLegacy: false,
     });
     return { connection: connections[0] ?? null, selectedInstanceId };
   }
@@ -262,6 +263,7 @@ export async function selectBridgeConnection(config, sessionInfo, {
     request,
     waitForLegacyBridge,
     refreshLogin: false,
+    probeLegacy: true,
   });
   if (connections.length > 1) {
     throw new BridgeError("BRIDGE_PROFILE_AMBIGUOUS", BRIDGE_ERROR_MESSAGES.BRIDGE_PROFILE_AMBIGUOUS);
@@ -273,6 +275,7 @@ export async function selectBridgeConnection(config, sessionInfo, {
     request,
     waitForLegacyBridge,
     refreshLogin: true,
+    probeLegacy: false,
   });
   return { connection: refreshed[0] ?? null, selectedInstanceId: null };
 }

@@ -802,6 +802,36 @@ test("background reuses one identity for install and startup and requires the ma
   });
 });
 
+test("only a valid legacy ready payload is reported as unsupported protocol", async () => {
+  const stateKey = "weixin-channels-video:bridge-connection-state";
+  await withBackgroundHarness({}, async ({ ports, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    await ports[0].onMessage.fire({ type: "ready", version: 1 });
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+    assert.equal(ports[0].disconnects, 1);
+  });
+
+  await withBackgroundHarness({}, async ({ ports, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    await ports[0].onMessage.fire({ type: "ready", version: 3, instanceId });
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+  });
+
+  for (const [ready, expectedReason] of [
+    [{ type: "ready", version: 1, instanceId: "423e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 2, instanceId: "523e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 3, instanceId: "523e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 2, instanceId: "423e4567-e89b-42d3-a456-426614174000", extra: true }, "invalid_ready_message"],
+  ]) {
+    await withBackgroundHarness({}, async ({ ports, storage }) => {
+      for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+      await ports[0].onMessage.fire(ready);
+      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: expectedReason });
+    });
+  }
+});
+
 test("background reconnects on the persistent one-minute alarm after host disconnect", async () => {
   await withBackgroundHarness({}, async ({ ports, onAlarm, alarms, storage }) => {
     for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
@@ -831,10 +861,22 @@ test("Native Messaging disconnects store safe Chrome error categories", async ()
       chromeApi.runtime.lastError = { message };
       await ports[0].onDisconnect.fire();
       for (let attempt = 0; attempt < 20 && storage.get(stateKey)?.stage !== "failed"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: reason === "host_exited" ? "protocol_unsupported" : reason });
+      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason });
       assert.equal(JSON.stringify(storage.get(stateKey)).includes("private"), false);
     });
   }
+});
+
+test("host exit remains a host exit after the v2 ready handshake", async () => {
+  const stateKey = "weixin-channels-video:bridge-connection-state";
+  await withBackgroundHarness({}, async ({ ports, storage, chromeApi }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId });
+    chromeApi.runtime.lastError = { message: "Native host has exited." };
+    await ports[0].onDisconnect.fire();
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "host_exited" });
+  });
 });
 
 test("only the fixed index page can refresh login or report authentication expiry", async () => {

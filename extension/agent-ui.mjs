@@ -22,7 +22,7 @@ const BRIDGE_FAILURES = Object.freeze({
   host_not_registered: "本地程序尚未注册。请让 AI 检查 Skill 配置。",
   host_start_failed: "本地程序启动失败。请让 AI 检查运行环境。",
   host_access_forbidden: "浏览器未获准访问本地程序。请让 AI 检查扩展配置。",
-  host_exited: "本地程序已退出。请让 AI 检查运行状态。",
+  host_exited: "本地程序已退出，连接未建立或已中断。请让 AI 检查本地桥接。",
   host_communication_failed: "浏览器与本地程序通信失败。请让 AI 检查连接。",
   host_disconnected: "与本地程序的连接已断开。请让 AI 检查连接。",
   invalid_ready_message: "本地程序返回的启动状态无效。请让 AI 检查扩展和 Skill 版本。",

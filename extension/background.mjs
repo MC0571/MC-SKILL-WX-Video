@@ -329,6 +329,15 @@ function connectNative(instanceId) {
   port.onMessage.addListener((message) => {
     if (nativeConnection !== connection) return;
     if (message?.type === "ready") {
+      if (hasExactKeys(message, ["type", "version"]) && message.version === 1) {
+        disconnectNative(connection, "protocol_unsupported");
+        return;
+      }
+      if (hasExactKeys(message, ["type", "version", "instanceId"]) &&
+          Number.isSafeInteger(message.version) && message.version > 2 && message.instanceId === instanceId) {
+        disconnectNative(connection, "protocol_unsupported");
+        return;
+      }
       if (!hasExactKeys(message, ["type", "version", "instanceId"]) || message.version !== 2 || message.instanceId !== instanceId) {
         disconnectNative(connection, "invalid_ready_message");
         return;
@@ -351,7 +360,7 @@ function connectNative(instanceId) {
     if (nativeConnection !== connection) return;
     nativeConnection = undefined;
     const reason = classifyNativeDisconnect(chrome.runtime.lastError?.message);
-    setNativeConnectionState("failed", reason === "host_exited" && !connection.ready ? "protocol_unsupported" : reason);
+    setNativeConnectionState("failed", reason);
     return scheduleReconnect(connection.ready);
   });
   try { port.postMessage({ type: "hello", version: 2, instanceId }); }

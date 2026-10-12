@@ -79,6 +79,8 @@ test("login and bridge snapshots control status, login entry, and browser diagno
 
   changes.forEach((listener) => listener({ [LOGIN_STORAGE_KEY]: { newValue: { login: "anonymous", checkedAt: 456 } } }, "local"));
   assert.equal(controls.get("#yuanbao-login-link").hidden, false);
+  changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "host_exited" } } }, "local"));
+  assert.equal(controls.get("#bridge-connection-status").textContent, "本地程序已退出，连接未建立或已中断。请让 AI 检查本地桥接。");
   changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "protocol_unsupported" } } }, "local"));
   assert.equal(controls.get("#bridge-connection-status").textContent, "扩展与本地程序协议不兼容。请让 AI 更新 Skill。");
 });

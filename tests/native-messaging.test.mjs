@@ -13,7 +13,7 @@ import { BRIDGE_ERROR_MESSAGES, BridgeFrameDecoder, encodeBridgeFrame, isAbsolut
 import { createIpcNonce, createIpcProof, createWindowsPipeServer, isIpcSession, verifyIpcProof, windowsPipeName } from "../src/native-ipc.mjs";
 import { startNativeHost } from "../src/native-host.mjs";
 import { BridgeSetupError, bridgeSocketPath, installBridge, inspectBridgeComponents, readBridgeConnections, readBridgeInstallation, readBridgeSelection, readBridgeSession } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
-import { BridgeError, discoverBridgeConnections, requestBridge, waitForBridge } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
+import { BridgeError, discoverBridgeConnections, requestBridge, selectBridgeConnection, waitForBridge } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
 import { runCli } from "../skills/weixin-channels-video/scripts/cli.mjs";
 import { secureWindowsPath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
@@ -72,7 +72,7 @@ function collectFrames(stream) {
   };
 }
 
-function createAuthenticatedFakeServer({ sessionInfo = SESSION_INFO, hostSecret = sessionInfo.ipcSecret, hostNonce = "b".repeat(64), onTask = () => {} } = {}) {
+function createAuthenticatedFakeServer({ sessionInfo = SESSION_INFO, hostSecret = sessionInfo.ipcSecret, hostNonce = "b".repeat(64), onClientProof = () => {}, onTask = () => {} } = {}) {
   return createServer((socket) => {
     const decoder = new BridgeFrameDecoder();
     let phase = "hello";
@@ -87,6 +87,7 @@ function createAuthenticatedFakeServer({ sessionInfo = SESSION_INFO, hostSecret 
           })));
         } else if (phase === "proof") {
           phase = "task";
+          onClientProof(message, clientNonce, hostNonce);
           socket.write(Buffer.from(encodeBridgeFrame({
             type: "proof",
             version: 2,
@@ -598,6 +599,59 @@ test("connection discovery skips stale sockets, rejects malformed status, and id
   });
   assert.equal(liveV2.length, 1);
   assert.equal(legacyProbeCount, 0, "a stale legacy hint cannot block a live v2 instance");
+});
+
+test("connection discovery detects a live legacy host without discovery records using IPC authentication only", async () => {
+  await withShortTempDir(async (root) => {
+    const config = { appSupportDir: root };
+    const sessionInfo = { ...SESSION_INFO, sessionId: SESSION_1 };
+    let clientProofs = 0;
+    let taskFrames = 0;
+    const server = createAuthenticatedFakeServer({
+      sessionInfo,
+      onClientProof(message, clientNonce, hostNonce) {
+        clientProofs += 1;
+        assert.equal(message.type, "proof");
+        assert.equal(message.role, "client");
+        assert.equal(message.proof, createIpcProof(IPC_SECRET, "client", clientNonce, hostNonce));
+      },
+      onTask() { taskFrames += 1; },
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(bridgeSocketPath(config, SESSION_1), resolve);
+    });
+    try {
+      assert.deepEqual(await readBridgeConnections(config, sessionInfo), []);
+      await assert.rejects(discoverBridgeConnections(config, sessionInfo), { code: "BRIDGE_PROTOCOL_UNSUPPORTED" });
+      assert.equal(clientProofs, 1, "the live endpoint completed an authenticated IPC handshake");
+      assert.equal(taskFrames, 0, "discovery does not send status or task requests to a legacy host");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("connection discovery ignores an absent legacy endpoint, and selected offline profiles never probe it", async () => {
+  await withTempDir(async (root) => {
+    const config = { appSupportDir: root };
+    const sessionInfo = { ...SESSION_INFO, sessionId: SESSION_1 };
+    const noLegacy = await discoverBridgeConnections(config, sessionInfo, {
+      waitForLegacyBridge: (cfg, session, options) => waitForBridge(cfg, session, { ...options, timeoutMs: 0 }),
+    });
+    assert.deepEqual(noLegacy, []);
+
+    let legacyProbeCount = 0;
+    const selected = await selectBridgeConnection(config, sessionInfo, {
+      instanceId: "423e4567-e89b-42d3-a456-426614174000",
+      readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+      request: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "offline"); },
+      waitForLegacyBridge: async () => { legacyProbeCount += 1; },
+    });
+    assert.equal(selected.connection, null);
+    assert.equal(selected.selectedInstanceId, "423e4567-e89b-42d3-a456-426614174000");
+    assert.equal(legacyProbeCount, 0, "an explicit selection remains isolated from global legacy discovery");
+  });
 });
 
 test("connection and selection readers reject unsafe filesystem object types", async () => {
