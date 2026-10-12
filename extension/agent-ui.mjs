@@ -34,8 +34,8 @@ const BRIDGE_FAILURES = Object.freeze({
 
 const PROMPT = [
   "扩展已安装。请先阅读并遵守安装指引：https://github.com/MC0571/weixin-channels-video/blob/main/skills/weixin-channels-video/references/agent-installation.md",
-  "确认当前宿主能否访问装有扩展的目标 Chrome 用户，再按宿主官方入口安装或复用完整 Skill。尽量在后台复用已有浏览器；扩展缺失时默认引导安装 Chrome Web Store 版本，只有我明确选择时才使用非商店版。",
-  "按 Skill 配置桥接，以 Agent 与扩展真实通信往返成功为准。需要我选择 Chrome 用户、首次打开浏览器或完成系统授权时再交接；完成后报告连接结果并停止。本次不要求我登录元宝，也不要求解析或下载视频。",
+  "按宿主官方入口安装或复用完整 Skill，并从装有扩展的目标 Chrome 用户的扩展详情页确认当前实际扩展 ID；不要用旧登记或配置推断当前身份。",
+  "按 Skill 指引检查或修复桥接，以 Agent 与扩展真实通信往返成功为准；完成一次连接检查后简短报告连接与元宝登录状态。若指引要求我完成权限或其他人工操作，只交接那一步并停止。",
 ].join("\n");
 
 function validBridgeState(value) {

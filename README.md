@@ -55,22 +55,21 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-需要自己操作时，在安装后的 Skill 目录执行：
+需要自己操作时，先在目标 Chrome 用户打开 `chrome://extensions`，找到本扩展并打开“详情”，复制当前扩展 ID。旧桥接配置不能证明当前安装的 ID。然后在安装后的 Skill 目录执行：
 
 ```sh
 node scripts/run.mjs prepare
-node scripts/run.mjs install-bridge --extension-id '替换为当前扩展ID'
-node scripts/run.mjs connections
-node scripts/run.mjs connect
+node scripts/run.mjs install-bridge --extension-id '粘贴当前扩展 ID'
+node scripts/run.mjs connect --extension-id '粘贴同一扩展 ID'
 node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
 ```
 
-扩展与 Skill 独立安装和更新。扩展缺失时默认引导安装 Chrome Web Store 版本；只有你明确选择非商店版时，才使用独立 Release ZIP 或源码构建产物。安装 Skill 和桥接后，通过 `connect` 确认一次与扩展的真实往返即可完成准备；不要求先登录元宝、解析或下载。Chrome 扩展在后台自动发现桥接并恢复连接；不需要打开或保留扩展页面。
+扩展与 Skill 独立安装和更新。扩展缺失时默认引导安装 Chrome Web Store 版本；只有你明确选择非商店版时，才使用独立 Release ZIP 或源码构建产物。安装 Skill 和桥接后，通过 `connect` 确认一次与扩展的真实往返即可完成准备；不要求先登录元宝、解析或下载。Chrome 扩展在后台自动发现桥接并恢复连接；不需要打开或保留扩展页面。常规连接不需要读取 Chrome profile 元数据。若用户明确选择 profile，可在登记桥接时提供 `--profile`；CLI 只会在 Chrome 明确未运行且该 profile 已确认时后台启动一次，状态未知或 profile 未确认时请手动打开所选 Chrome 用户。完整连接及失败处理按 [Skill 指引](skills/weixin-channels-video/SKILL.md)执行。
 
-`connections` 只列出已认证且实际响应 status 的在线扩展实例，不等待元宝网络。唯一候选可用于本次任务；有多个时通过 `connect --instance <UUID>` 明确选择并持久绑定。绑定的实例离线时不会自动切换到另一个 Chrome 用户。登录状态以扩展维护的五分钟 snapshot 为准：明确匿名时停止任务并请用户登录，检查失败或状态未知不会误报成未登录，也不作为连接失败。下载默认使用清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`），显式相对 `.mp4` 文件名按原路径传递，重名时由 Chrome 自动追加后缀；命令等待 Chrome 确认完成后才报告成功。任务提交后断连或超时不会自动重发。完整连接、登录与下载规则见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+`connections` 仅列出已认证且实际响应 status 的在线扩展实例。多个候选时，按用户选择通过 `connect --instance <UUID>` 指定；绑定实例离线时不会自动切换到另一 Chrome 用户。下载默认使用清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`），显式相对 `.mp4` 文件名按原路径传递，重名时由 Chrome 自动追加后缀；命令等待 Chrome 确认完成后才报告成功。任务提交后断连或超时不会自动重发。登录状态报告和失败时的下一步见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
 
-连接成功后，若登录状态已确认，即可从微信复制视频号分享链接交给 Agent；若明确未登录，请在安装该扩展的 Chrome 用户中登录[腾讯元宝](https://yuanbao.tencent.com/)。状态无法确认时应重试检查，不要将未知状态当作未登录。
+连接失败时按 Skill 指引处理，不要循环等待或反复重启、重装。
 
 ## 自部署 API
 

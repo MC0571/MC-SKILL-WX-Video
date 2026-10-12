@@ -17,19 +17,27 @@ description: 通过本机 Chrome 扩展解析视频号分享链接并下载视�
 node <skill-root>/scripts/run.mjs prepare
 ```
 
-源码 Skill 的 `prepare` 从正式 Releases 中选择最新稳定且兼容的 Skill 包；同版本优先选择 `skill-v…`，也接受带完整 Skill 归档的旧式 `v…` Release。只有归档元数据明确表明运行资源协议不兼容或当前 Node 低于最低版本时才跳过该候选继续查找；网络、元数据、哈希或归档校验失败时停止。选择前校验 SHA256，成功后写入按用户隔离的本地缓存。若没有兼容资源，准确报告并停止；不要把扩展 Release 当作 Skill 包，也不要清空当前缓存。普通 CLI 命令复用兼容缓存；首次缓存缺失时会准备后继续。独立 Skill Release 包自带运行资源，可离线准备。准备失败时保留当前缓存。SHA256 校验不是签名验证。IPC protocol 2 的私有 HMAC 端点与 Native Messaging wire protocol 2 独立版本管理。
+源码 Skill 的 `prepare` 从正式 Releases 中选择最新稳定且兼容的 Skill 包；同版本优先选择 `skill-v…`，也接受带完整 Skill 归档的旧式 `v…` Release。只有归档元数据明确表明运行资源协议不兼容或当前 Node 低于最低版本时才跳过该候选继续查找；网络、元数据、哈希或归档校验失败时停止。选择前校验 SHA256，成功后写入按用户隔离的本地缓存。若没有兼容资源，准确报告并停止；不要把扩展 Release 当作 Skill 包，也不要清空当前缓存。CLI 按运行资源内容复用缓存；同一版本的包更新了运行资源时会使用匹配的新缓存，无需手动清理旧缓存。首次缓存缺失时会准备后继续。独立 Skill Release 包自带运行资源，可离线准备。准备失败时保留当前缓存。SHA256 校验不是签名验证。IPC protocol 2 的私有 HMAC 端点与 Native Messaging wire protocol 2 独立版本管理。
 
 Skill 和 Chrome 扩展分别构建、发布和更新。CLI 与 host 随同一个 Skill 包发布，扩展独立发布。组件版本用于追溯，不代表兼容性；通信兼容性由运行资源、Native Messaging wire protocol 和 IPC protocol 决定，不要求版本号相同。扩展安装方式的选择见 [Agent 安装与本地运行边界](references/agent-installation.md)。Skill 包只含 CLI、Native Messaging host 和运行资源，不携带或管理扩展。
 
 ## 连接与登录状态
 
-安装桥接时，从当前 Chrome 中已安装扩展的详情页读取真实扩展 ID：
+先在目标 Chrome 用户中打开 `chrome://extensions`，找到当前安装的本扩展并打开“详情”，复制页面显示的扩展 ID。以当前安装为准；旧桥接配置、提示词或另一 Chrome 用户中的记录都不能证明目标用户当前安装了哪个 ID。再用此 ID 安装桥接：
 
 ```sh
 node <skill-root>/scripts/run.mjs install-bridge --extension-id <extension-id>
 ```
 
 每个 Chrome 扩展实例在自己的 `storage.local` 中生成稳定 UUID。桥接为每个实例创建独立私有 endpoint 和 discovery record；Native Messaging host 的 `allowed_origins` 与收到的扩展 `origin` 都按登记的真实扩展 ID 校验。扩展在后台启动及持久 alarm 恢复时自动发现桥接并连接；不要求打开或保留扩展页面，也不使用配对码或临时连接页。桥接安装后需有一次 CLI 与扩展之间真实 status 往返才算连接就绪；这一步不要求元宝已登录。
+
+连接时可重复传入刚从目标 Chrome 扩展详情页复制的 ID：
+
+```sh
+node <skill-root>/scripts/run.mjs connect --extension-id <actual-id>
+```
+
+CLI 先将这个 ID 与当前桥接登记的 ID 比对；不一致时会在读取 session、发现实例或启动 Chrome 前停止。确认目标 Chrome 安装的 ID 已变化后，用当前 ID 重新运行 `install-bridge` 更新登记。更换 ID 会清除桥接中旧的 profile 选择；同一 ID 和同一 Chrome 用户目录下重新登记会保留已确认的 profile 选择。通常连接无需读取 Chrome profile 元数据；只有用户明确选择 profile 时，才在安装桥接时传 `--profile <name-or-directory>`。
 
 查看可用连接：
 
@@ -41,11 +49,19 @@ node <skill-root>/scripts/run.mjs connections
 
 开始解析或下载前，读取实例保存的登录 snapshot。快照含 `login`、`checkedAt`（Unix epoch 毫秒或 `null`）及可选错误类别；状态为 `authenticated`、`anonymous`、`failed` 或 `not_checked`。扩展以单一五分钟 heartbeat 更新快照，并在页面打开时强制刷新。查询登录状态或准备新任务时，仅在 snapshot 未知或过期时请求刷新，已有新鲜 snapshot 会复用。扩展响应本身证明桥接往返，不依赖元宝请求成功。明确 `anonymous` 时停止解析/下载并请用户登录；`failed` 表示登录检查失败，不能当作未登录，也不表示桥接连接失败。解析请求收到 `AUTH_EXPIRED` 时，扩展同步将 snapshot 标为匿名。
 
-连接断开后，CLI 先读取 Chrome 是否 `running`、`not_running` 或 `unknown`。`running` 时复用 Chrome 并等待后台恢复；只有明确 `not_running` 时才启动一次 Chrome，不附带 URL。macOS 使用 `open -g` 后台启动；Windows 使用 Chromium `--no-startup-window` 在无窗口状态启动正常 Chrome，让扩展后台运行，不使用 headless 或远程调试。Windows 实机前台焦点行为尚未验证。`unknown` 时报告检测到的错误，不把它当作 Chrome 已关闭。
+每次 `connect` 的总等待上限为 90 秒。`running` 时复用 Chrome 并等待扩展后台恢复；只有 Chrome 明确为 `not_running`、且桥接登记了用户确认的 profile 时，才后台启动一次该 Chrome 用户，不附带 URL。macOS 使用 `open -g`；Windows 使用 `--no-startup-window` 启动正常 Chrome，不使用 headless 或远程调试。若目标 profile 未确认或进程状态为 `unknown`，请用户手动打开所选 Chrome 用户后再继续；不得猜测目标、反复启动 Chrome 或循环重试。Windows 实机前台焦点行为尚未验证。
+
+连接失败时，最多运行一次 `diagnose`，然后给出一个具体的人工检查或修复动作并等待用户完成；不要循环等待、重启或重装。诊断中的 profile 和扩展元数据只是辅助线索，不证明当前安装状态或实时连接。遇到 `EPERM` 或 `EACCES` 时停止 profile 扫描，不扩大权限或搜索整个磁盘；请用户在所选 Chrome 用户中打开 `chrome://extensions`，进入本扩展详情并复制当前扩展 ID，再按需要更新桥接登记。
 
 旧 Native Messaging wire v1 配对的扩展与新版 host 保持给旧 CLI 使用。新版 CLI 遇到 legacy 配置时明确提示升级，不回退到旧握手。新版扩展遇到旧 host 时，用 `install-bridge --extension-id <extension-id>` 更新桥接。同一扩展 ID、Chrome 用户目录与 profile 身份下，已有 IPC protocol 2 私有配置和 secret 在更新时保留；各组件版本按实际握手结果报告。
 
-连接确认后，读取一次 `status` 确认登录状态，并用普通语言给用户下一步：若已登录，说明可以开始，建议用户在微信找一个视频号、分享并复制链接交给 Agent 尝试解析或下载；若明确未登录，说明扩展通过腾讯元宝获取视频号信息，因此下载前需要登录，并提供 [腾讯元宝](https://yuanbao.tencent.com/) 入口，提醒在安装该扩展的 Chrome 用户中登录。检查失败或状态未知时，明确说暂时无法确认并建议检查或重试；不能把未知说成未登录或安装失败。登录指引不表示代用户登录，也不自动提交解析或下载任务。
+连接确认后，只读取一次 `status` 确认登录状态，并用普通语言说明下一步。可按结果这样回应：
+
+- 已登录：“连接已就绪。你可以在微信中打开一个视频号，分享并复制链接给我，我会尝试解析或下载。”
+- 明确未登录：“连接正常。扩展通过腾讯元宝获取视频号信息；下载前请在安装该扩展的同一 Chrome 用户中登录[腾讯元宝](https://yuanbao.tencent.com/)。”
+- 未知或检查失败：“连接已就绪，但我暂时无法确认腾讯元宝的登录状态。请在同一 Chrome 用户中打开腾讯元宝并确认页面可访问，然后告诉我继续检查。”
+
+不得把未知说成未登录或安装失败。登录指引不表示代用户登录，也不自动提交解析或下载任务。
 
 连接确认后调用：
 

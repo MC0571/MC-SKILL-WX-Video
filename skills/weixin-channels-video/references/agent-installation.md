@@ -29,7 +29,7 @@ Node 版本事实以包内 `scripts/runtime-support.mjs` 为准。版本已满�
 
 Windows Chrome 需要 Windows Node 与 Windows 文件路径。WSL 中的 Node 是 Linux 程序，不能用于注册 Windows Native Messaging host。只有 Windows interop 已启用且策略允许时，才通过受支持的方式调用 Windows `node.exe`；确认实际 `process.platform` 为 `win32`。否则停止并交接，不能用 Linux Node 伪装 Windows host。
 
-在目标 Agent 执行环境检查它是否能读写 Skill 与下载目录、运行本地 Node、取得 GitHub Release，并调用目标 Chrome。权限拒绝或安全策略阻断时交接最短人工步骤，不降低权限或换用其他桥接入口。
+在目标 Agent 执行环境检查它是否能读写 Skill 与下载目录、运行本地 Node、取得 GitHub Release，并调用目标 Chrome。权限拒绝或安全策略阻断时交接最短人工步骤，不降低权限或换用其他桥接入口。profile 元数据只用于辅助诊断；出现 `EPERM` 或 `EACCES` 时停止扫描，不扩大权限或搜索整个磁盘。具体连接失败的人工交接步骤见 [Skill 指引](../SKILL.md)。
 
 ## Chrome 扩展安装方式
 
@@ -37,6 +37,6 @@ Skill 与 Chrome 扩展分开安装和更新；Skill 包不包含扩展，也不
 
 1. 从 `extension-v…` GitHub Release 下载扩展 ZIP，并核对该 Release 的 `SHA256SUMS`；或按 [架构与维护说明](../../../docs/architecture.md#构建与发布)从源码构建。
 2. 解压或构建到持续保留的位置，不放在 Skill 缓存中。开发者模式仅用于该非商店安装方式。
-3. 在所选 Chrome 用户的扩展详情页查看当前运行实例信息。扩展 ID 和实例绑定按 [Skill 指引](../SKILL.md)执行；本页不规定连接或恢复流程。
+3. 在目标 Chrome 用户的 `chrome://extensions` 中打开本扩展详情，按 [Skill 指引](../SKILL.md)确认当前扩展 ID 并安装桥接。本页不规定连接或恢复流程；旧桥接配置不能证明目标用户当前安装状态。
 
 Skill 与扩展版本独立，版本不同本身不表示不兼容；以 Skill 的协议检查结果为准。商店审核与上线可能有延迟。GitHub 发布或送审不代表商店已经更新；若商店版缺少所需功能，可等待商店更新，或由用户明确选择非商店版。

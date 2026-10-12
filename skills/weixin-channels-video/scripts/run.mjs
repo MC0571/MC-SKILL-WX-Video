@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { constants, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { MIN_NODE_VERSION, RUNTIME_PROTOCOL, supportsNodeVersion } from "./runtime-support.mjs";
@@ -147,6 +147,15 @@ async function copyCacheFile(source, destination) {
     return;
   }
   await copyFile(source, destination, constants.COPYFILE_EXCL);
+}
+
+async function runtimeContentHash(root) {
+  const hash = createHash("sha256");
+  for (const name of ["runtime.json", "scripts/cli.mjs", "scripts/native-host.mjs"]) {
+    const contents = await readRegularFile(join(root, name));
+    hash.update(name + "\0" + contents.length + "\0").update(contents);
+  }
+  return hash.digest("hex");
 }
 
 function parseRuntimeMetadata(text, expectedVersion) {
@@ -487,8 +496,12 @@ async function readCurrentMarker({ missingOk = false } = {}) {
     if (process.platform === "win32") await assertWindowsPrivatePath(markerPath);
     const marker = JSON.parse(await readFile(markerPath, "utf8"));
     if (
-      !isRecord(marker) || Object.keys(marker).length !== 2 ||
-      !parseVersion(marker.version) || marker.runtimeProtocol !== RUNTIME_PROTOCOL
+      !isRecord(marker) || ![2, 3].includes(Object.keys(marker).length) ||
+      !parseVersion(marker.version) || marker.runtimeProtocol !== RUNTIME_PROTOCOL ||
+      (Object.hasOwn(marker, "packageHash") &&
+        (Object.keys(marker).length !== 3 || typeof marker.packageHash !== "string" ||
+          !/^[a-f0-9]{64}$/.test(marker.packageHash))) ||
+      (!Object.hasOwn(marker, "packageHash") && Object.keys(marker).length !== 2)
     ) fail("运行资源缓存标记无效，已保留原文件。");
     return marker;
   } catch (error) {
@@ -497,15 +510,14 @@ async function readCurrentMarker({ missingOk = false } = {}) {
   }
 }
 
-async function writeCurrentVersion(version) {
+async function writeCurrentVersion(version, packageHash) {
   await readCurrentMarker({ missingOk: true });
   const markerPath = join(CACHE_ROOT, "current.json");
   const tempPath = join(CACHE_ROOT, ".current-" + randomUUID() + ".tmp");
+  const marker = { version, runtimeProtocol: RUNTIME_PROTOCOL };
+  if (packageHash) marker.packageHash = packageHash;
   try {
-    await writeCacheFile(tempPath, Buffer.from(JSON.stringify({
-      version,
-      runtimeProtocol: RUNTIME_PROTOCOL,
-    }) + "\n"));
+    await writeCacheFile(tempPath, Buffer.from(JSON.stringify(marker) + "\n"));
     if (process.platform === "darwin") await chmod(tempPath, 0o600);
     await rename(tempPath, markerPath);
   } finally {
@@ -574,7 +586,10 @@ async function prepareFromRelease() {
 }
 
 async function cacheRuntime(source, runtime, stagePrefix) {
-  const destination = join(CACHE_ROOT, runtime.version);
+  const packageHash = stagePrefix === "package" ? await runtimeContentHash(source) : null;
+  const destination = join(CACHE_ROOT, packageHash
+    ? runtime.version + "-package-" + packageHash
+    : runtime.version);
   let destinationInfo;
   try { destinationInfo = await lstat(destination); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -583,7 +598,11 @@ async function cacheRuntime(source, runtime, stagePrefix) {
     if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) {
       fail("同版本运行资源缓存不是普通目录，已保留原数据。");
     }
-    return readRuntime(destination, runtime.version, { requirePrivate: true });
+    const cachedRuntime = await readRuntime(destination, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(destination) !== packageHash) {
+      fail("同版本运行资源缓存内容与包不一致，已保留原数据。");
+    }
+    return cachedRuntime;
   }
 
   const stage = await mkdtemp(join(CACHE_ROOT, "." + stagePrefix + "-" + runtime.version + "-"));
@@ -595,6 +614,9 @@ async function cacheRuntime(source, runtime, stagePrefix) {
     await copyCacheFile(runtime.runtimeCLI, join(scripts, "cli.mjs"));
     await copyCacheFile(join(dirname(runtime.runtimeCLI), "native-host.mjs"), join(scripts, "native-host.mjs"));
     await readRuntime(stage, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(stage) !== packageHash) {
+      fail("Skill 包内运行资源复制校验失败。");
+    }
 
     try {
       await rename(stage, destination);
@@ -604,7 +626,11 @@ async function cacheRuntime(source, runtime, stagePrefix) {
       catch { throw error; }
       if (!existing.isDirectory() || existing.isSymbolicLink()) throw error;
     }
-    return readRuntime(destination, runtime.version, { requirePrivate: true });
+    const cachedRuntime = await readRuntime(destination, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(destination) !== packageHash) {
+      fail("同版本运行资源缓存内容与包不一致，已保留原数据。");
+    }
+    return cachedRuntime;
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
@@ -612,7 +638,18 @@ async function cacheRuntime(source, runtime, stagePrefix) {
 
 export async function materializeRuntime(runtime, { writeMarker = writeCurrentVersion } = {}) {
   const previous = await readCurrentMarker({ missingOk: true });
-  if (!previous || previous.version !== runtime.version) await writeMarker(runtime.version);
+  const runtimeRoot = dirname(dirname(runtime.runtimeCLI));
+  const relativeRuntimeRoot = relative(CACHE_ROOT, runtimeRoot);
+  const packagePrefix = runtime.version + "-package-";
+  const packageHash = relativeRuntimeRoot.startsWith(packagePrefix)
+    ? relativeRuntimeRoot.slice(packagePrefix.length)
+    : null;
+  if (packageHash && !/^[a-f0-9]{64}$/.test(packageHash)) {
+    fail("运行资源缓存路径无效。");
+  }
+  if (!previous || previous.version !== runtime.version || (previous.packageHash ?? null) !== packageHash) {
+    await writeMarker(runtime.version, packageHash);
+  }
   return runtime;
 }
 
@@ -635,10 +672,16 @@ async function currentRuntime() {
   if (!marker) {
     return prepareFromRelease();
   }
-  const runtimeRoot = join(CACHE_ROOT, marker.version);
+  const runtimeRoot = join(CACHE_ROOT, marker.packageHash
+    ? marker.version + "-package-" + marker.packageHash
+    : marker.version);
   const runtimeInfo = await lstat(runtimeRoot);
   if (!runtimeInfo.isDirectory() || runtimeInfo.isSymbolicLink()) fail("当前运行资源缓存目录无效。");
-  return readRuntime(runtimeRoot, marker.version, { requirePrivate: true });
+  const runtime = await readRuntime(runtimeRoot, marker.version, { requirePrivate: true });
+  if (marker.packageHash && await runtimeContentHash(runtimeRoot) !== marker.packageHash) {
+    fail("当前 Skill 包运行资源缓存内容校验失败。请重新运行 prepare。");
+  }
+  return runtime;
 }
 
 function execute(runtimeCLI, args) {

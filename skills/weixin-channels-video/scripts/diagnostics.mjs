@@ -219,6 +219,9 @@ export async function launchChrome(config, _sessionId, {
 
 function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, platform, candidateAction }) {
   if (connection.state === "connected") return [];
+  if (profile.state === "access_denied" || candidateAction === "open_chrome_extensions") {
+    return ["open_chrome_extensions"];
+  }
   const actions = [];
   if (chrome.installation === "not_installed") actions.push("install_chrome_after_user_approval");
   else if (chrome.compatibility === "too_old") actions.push("upgrade_chrome");
@@ -229,7 +232,7 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
   if (candidateAction) actions.push(candidateAction);
   if (profile.state === "not_found") actions.push("select_an_existing_profile");
   else if (profile.state === "ambiguous") actions.push("choose_profile_directory");
-  else if (profile.state === "metadata_unreadable") actions.push("check_profile_metadata_access");
+  else if (profile.state === "metadata_unreadable") actions.push("open_chrome_extensions");
   if (extension.state === "disabled") actions.push("ask_user_to_enable_extension");
   else if (extension.state === "missing_or_id_mismatch_possible") actions.push("verify_extension_id_or_load_extension_after_user_approval");
   else if (extension.state === "recorded_unknown") actions.push("check_extension_enabled_state_in_chrome");
@@ -262,6 +265,7 @@ function candidateNextAction(chrome, profileState, extensionState) {
   if (chrome.installation === "unknown") return "verify_chrome_installation";
   if (profileState === "not_found") return "select_an_existing_profile";
   if (profileState === "ambiguous") return "choose_profile_directory";
+  if (["access_denied", "metadata_unreadable"].includes(profileState)) return "open_chrome_extensions";
   if (profileState !== "exists") return "check_profile_metadata_access";
   if (extensionState === "enabled") return "install_bridge_with_selected_profile";
   if (extensionState === "disabled") return "enable_extension_in_chrome";
@@ -296,7 +300,8 @@ async function inspectCandidate({ profile, extensionId }, {
   let selected;
   try { selected = await selectCandidateProfile(profile, userDataDir); }
   catch (error) {
-    const profileState = error.message.includes("ambiguous") ? "ambiguous"
+    const profileState = error.code === "EPERM" || error.code === "EACCES" ? "access_denied"
+      : error.message.includes("ambiguous") ? "ambiguous"
       : error.message.includes("not found") ? "not_found"
         : "metadata_unreadable";
     return {
@@ -362,15 +367,6 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
   try { bridge = await inspectBridge(config); } catch { /* Keep unavailable bridge metadata unknown. */ }
   let connection = { state: "unknown" };
   if (config) {
-    try {
-      profile = await inspectProfile({
-        profileDirectory: config.profileDirectory,
-        userDataDir: config.chromeUserDataDir,
-        extensionId: config.extensionId,
-      });
-    } catch {
-      profile = { state: "unknown", extension: "unknown" };
-    }
     const bridgeSession = sessionInfo ?? sessionId;
     if (bridgeSession?.ipcProtocol === 1) {
       connection = { state: "session_mismatch" };
@@ -403,6 +399,19 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
                 : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
                   : code === "BRIDGE_DISCONNECTED" ? "disconnected"
                     : "unknown" };
+      }
+    }
+    if (connection.state === "connected") {
+      profile = { state: "unknown", extension: "unknown" };
+    } else {
+      try {
+        profile = await inspectProfile({
+          profileDirectory: config.profileDirectory,
+          userDataDir: config.chromeUserDataDir,
+          extensionId: config.extensionId,
+        });
+      } catch {
+        profile = { state: "unknown", extension: "unknown" };
       }
     }
   }

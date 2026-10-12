@@ -464,6 +464,33 @@ test("installer supports manual pairing without profile metadata and preserves i
   });
 });
 
+test("changing the extension ID without a profile clears the old profile and rotates the session", async () => {
+  await withShortTempDir(async (root) => {
+    const chromeRoot = await chromeProfileFixture(root);
+    const appSupportDir = join(root, "private", "bridge");
+    const nativeHostSource = join(root, "native-host-bundle.mjs");
+    await writeFile(nativeHostSource, "// synthetic host bundle\n");
+    const options = {
+      appSupportDir,
+      chromeUserDataDir: chromeRoot,
+      registryDir: join(chromeRoot, "NativeMessagingHosts"),
+      nodeExecutable: "/Applications/Node Runtime/bin/node",
+      nativeHostSource,
+      platform: "darwin",
+    };
+    const installed = await installBridge({ ...options, extensionId: EXTENSION_ID, profile: "Research" });
+    const previousSession = JSON.parse(await readFile(join(appSupportDir, "session.json"), "utf8"));
+
+    const changed = await installBridge({ ...options, extensionId: "b".repeat(32) });
+    const nextSession = JSON.parse(await readFile(join(appSupportDir, "session.json"), "utf8"));
+    assert.equal(installed.config.profileDirectory, "Profile 3");
+    assert.equal(Object.hasOwn(changed.config, "profileDirectory"), false);
+    assert.equal(Object.hasOwn(changed.config, "profileName"), false);
+    assert.notEqual(nextSession.sessionId, previousSession.sessionId);
+    assert.notEqual(nextSession.ipcSecret, previousSession.ipcSecret);
+  });
+});
+
 test("omitting profile on a same-install upgrade preserves profile and IPC secret; explicit profile change rotates them", async () => {
   await withShortTempDir(async (root) => {
     const chromeRoot = await chromeProfileFixture(root, [["Profile 3", "Research"], ["Default", "Personal"]]);
@@ -907,6 +934,125 @@ test("CLI discovers authenticated instances and persists only an explicit select
   assert.equal(selected, instanceId);
   assert.equal(outputs.pop(), "Connected to the Chrome extension.");
   assert.equal(errors.length, 0);
+});
+
+test("connect validates the supplied extension ID before reading session or discovering a bridge", async () => {
+  const errors = [];
+  let calls = 0;
+  const code = await runCli(["connect", "--extension-id", "b".repeat(32)], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID }),
+    readSession: async () => { calls += 1; throw new Error("must fail before reading session"); },
+    readConnections: async () => { calls += 1; throw new Error("must fail before discovery"); },
+    inspectRunning: () => { calls += 1; throw new Error("must fail before process inspection"); },
+  });
+  assert.equal(code, 1);
+  assert.equal(calls, 0);
+  assert.match(errors[0], /BRIDGE_EXTENSION_MISMATCH/);
+  assert.match(errors[0], /install-bridge/);
+  assert.equal(errors[0].includes("b".repeat(32)), false);
+  assert.equal(await runCli(["connect", "--extension-id", "not-an-extension"], { stderr: () => {} }), 2);
+});
+
+test("connect requires a registered profile before cold starting Chrome", async () => {
+  let launches = 0;
+  const errors = [];
+  const code = await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID }),
+    readSession: async () => SESSION_INFO,
+    readSelection: async () => null,
+    readConnections: async () => [],
+    inspectRunning: () => "not_running",
+    launch: async () => { launches += 1; },
+    waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "ignored"); },
+    connectionWaitMs: 500,
+  });
+  assert.equal(code, 1);
+  assert.equal(launches, 0);
+  assert.match(errors[0], /CHROME_PROFILE_REQUIRED/);
+  assert.match(errors[0], /手动打开 Chrome/);
+});
+
+test("an initial status probe that exhausts the connect budget cannot launch or retry", async () => {
+  let now = 1_000;
+  let probes = 0;
+  let launches = 0;
+  let processChecks = 0;
+  const errors = [];
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const code = await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID, profileDirectory: "Profile 2" }),
+    readSession: async () => SESSION_INFO,
+    readSelection: async () => null,
+    readConnections: async () => [{ instanceId, nativeProtocol: 2 }],
+    bridgeRequest: async (_config, _session, request, options) => {
+      probes += 1;
+      assert.equal(request.command, "status");
+      assert.equal(options.timeoutMs, 100);
+      now += options.timeoutMs;
+      return { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
+    },
+    inspectRunning: () => { processChecks += 1; return "not_running"; },
+    launch: async () => { launches += 1; },
+    connectionWaitMs: 100,
+    now: () => now,
+  });
+  assert.equal(code, 1);
+  assert.equal(probes, 1);
+  assert.equal(processChecks, 0);
+  assert.equal(launches, 0);
+  assert.match(errors[0], /BRIDGE_TIMEOUT/);
+  assert.match(errors[0], /打开已安装扩展的 Chrome 用户/);
+  assert.equal(errors[0].includes("下载可能仍会继续"), false);
+});
+
+test("login refresh status probes share and cap to the remaining connection budget", async () => {
+  let now = 0;
+  const timeouts = [];
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const selected = await selectBridgeConnection({ extensionId: EXTENSION_ID }, SESSION_INFO, {
+    deadline: 90_000,
+    now: () => now,
+    refreshLogin: true,
+    readSelection: async () => { now = 75_000; return null; },
+    readConnections: async () => [{ instanceId, nativeProtocol: 2 }],
+    request: async (_config, _session, request, options) => {
+      timeouts.push({ refreshLogin: Boolean(request.refreshLogin), timeoutMs: options.timeoutMs });
+      now += 1;
+      return { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
+    },
+  });
+  assert.equal(selected.connection.instanceId, instanceId);
+  assert.deepEqual(timeouts, [
+    { refreshLogin: false, timeoutMs: 1_000 },
+    { refreshLogin: true, timeoutMs: 14_999 },
+  ]);
+});
+
+test("connection discovery times out instead of selecting a partial result", async () => {
+  let now = 0;
+  let probes = 0;
+  const firstId = "423e4567-e89b-42d3-a456-426614174000";
+  const secondId = "523e4567-e89b-42d3-a456-426614174000";
+  await assert.rejects(selectBridgeConnection({ extensionId: EXTENSION_ID }, SESSION_INFO, {
+    deadline: 100,
+    now: () => now,
+    readSelection: async () => null,
+    readConnections: async () => [
+      { instanceId: firstId, nativeProtocol: 2 },
+      { instanceId: secondId, nativeProtocol: 2 },
+    ],
+    request: async (_config, _session, _request, options) => {
+      probes += 1;
+      if (probes === 1) return { instanceId: firstId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
+      now = 100;
+      assert.equal(options.timeoutMs, 100);
+      throw new BridgeError("BRIDGE_TIMEOUT", "probe timeout");
+    },
+  }), (error) => error instanceof BridgeError && error.code === "BRIDGE_TIMEOUT");
+  assert.equal(probes, 2);
 });
 
 test("CLI parse uses one authenticated instance and never logs the share URL", async () => {

@@ -8,7 +8,7 @@ import { BridgeSetupError, installBridge, listBridgeProfiles, readBridgeConnecti
 import { BridgeError, discoverBridgeConnections, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
 import { diagnoseEnvironment, inspectChromeRunning, launchChrome } from "./diagnostics.mjs";
 
-const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID] | connections | status | connect [--instance UUID] | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
+const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID] | connections | status | connect [--instance UUID] [--extension-id ID] | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const ERROR_MESSAGES = Object.freeze({ ...PARSE_ERROR_MESSAGES, ...BRIDGE_ERROR_MESSAGES });
 const CLI_VERSION = typeof __WCV_VERSION__ === "string" ? __WCV_VERSION__ : "unknown";
@@ -28,7 +28,7 @@ function parseArguments(command, args) {
     diagnose: ["profile", "extension-id"],
     connections: [],
     status: [],
-    connect: ["instance"],
+    connect: ["instance", "extension-id"],
     parse: ["url"],
     download: ["url", "filename"],
   }[command];
@@ -49,6 +49,7 @@ function parseArguments(command, args) {
   if (command === "diagnose" && Boolean(options.profile) !== Boolean(options["extension-id"])) throw new Error("USAGE");
   if (command === "diagnose" && options["extension-id"] && !EXTENSION_ID_PATTERN.test(options["extension-id"])) throw new Error("USAGE");
   if (command === "connect" && options.instance && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.instance)) throw new Error("USAGE");
+  if (command === "connect" && options["extension-id"] && !EXTENSION_ID_PATTERN.test(options["extension-id"])) throw new Error("USAGE");
   if (["parse", "download"].includes(command) && !options.url) throw new Error("USAGE");
   if (options.filename && !isSafeRelativeMp4Filename(options.filename)) throw new Error("INVALID_FILENAME");
   return options;
@@ -60,6 +61,9 @@ async function activeConnections(config, sessionInfo, options) {
     request: options.bridgeRequest,
     waitForLegacyBridge: options.waitForLegacyBridge,
     refreshLogin: options.refreshLogin === true,
+    ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+    now: options.now,
+    ...(options.sleep ? { sleep: options.sleep } : {}),
   });
 }
 
@@ -71,27 +75,55 @@ async function selectConnection(config, sessionInfo, options) {
     request: options.bridgeRequest,
     waitForLegacyBridge: options.waitForLegacyBridge,
     refreshLogin: options.refreshLogin === true,
+    ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+    now: options.now,
+    ...(options.sleep ? { sleep: options.sleep } : {}),
   });
   return connection;
 }
 
 async function ensureBridgeConnection(config, sessionInfo, options) {
-  const first = await selectConnection(config, sessionInfo, options);
+  const now = options.now ?? Date.now;
+  const waitMs = options.connectionWaitMs ?? BRIDGE_WAIT_MS;
+  const deadline = now() + waitMs;
+  const remaining = () => Math.max(0, deadline - now());
+  const timeoutError = cliBridgeError("BRIDGE_TIMEOUT", "bridge", "连接 Chrome 扩展超时。请打开已安装扩展的 Chrome 用户后重试。");
+  const assertRemaining = () => {
+    if (remaining() <= 0) throw timeoutError;
+  };
+  const budgetOptions = { ...options, deadline, now };
+  const selectWithinBudget = async () => {
+    try { return await selectConnection(config, sessionInfo, budgetOptions); }
+    catch (error) {
+      if (error instanceof BridgeError && error.code === "BRIDGE_TIMEOUT" && remaining() <= 0) assertRemaining();
+      throw error;
+    }
+  };
+  assertRemaining();
+  const first = await selectWithinBudget();
+  assertRemaining();
   if (first) return first;
   const running = options.inspectRunning();
-  if (running === "unknown") throw new BridgeError("CHROME_STATUS_UNAVAILABLE", "无法确认 Chrome 是否正在运行；请检查本机进程检测权限后重试。");
-  if (running === "not_running") await options.launch(config);
-  const deadline = Date.now() + (options.connectionWaitMs ?? BRIDGE_WAIT_MS);
+  assertRemaining();
+  if (running === "unknown") throw new BridgeError("CHROME_STATUS_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_STATUS_UNAVAILABLE);
+  if (running === "not_running") {
+    if (!config.profileDirectory) {
+      throw new BridgeError("CHROME_PROFILE_REQUIRED", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_REQUIRED);
+    }
+    assertRemaining();
+    await options.launch(config);
+    assertRemaining();
+  }
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  while (Date.now() < deadline) {
-    await sleep(Math.min(1_000, deadline - Date.now()));
-    const active = await selectConnection(config, sessionInfo, options);
+  while (remaining() > 0) {
+    const delay = Math.min(1_000, remaining());
+    await sleep(delay);
+    assertRemaining();
+    const active = await selectWithinBudget();
+    assertRemaining();
     if (active) return active;
   }
-  if (!config.profileDirectory) {
-    throw cliBridgeError("BRIDGE_TIMEOUT", "bridge", "请在日常使用的 Chrome 中启用扩展后重试；如果已绑定实例，请在对应 Chrome 用户中启动扩展。");
-  }
-  throw new BridgeError("BRIDGE_TIMEOUT", BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT);
+  throw timeoutError;
 }
 
 export async function runCli(argv, {
@@ -110,6 +142,7 @@ export async function runCli(argv, {
   waitForLegacyBridge = waitForBridge,
   connectionWaitMs,
   sleep,
+  now = Date.now,
   diagnose = diagnoseEnvironment,
 } = {}) {
   const [command, ...args] = argv;
@@ -192,12 +225,16 @@ export async function runCli(argv, {
       }
       throw new BridgeError("BRIDGE_NOT_CONFIGURED", BRIDGE_ERROR_MESSAGES.BRIDGE_NOT_CONFIGURED);
     }
+    if (command === "connect" && options["extension-id"] && options["extension-id"] !== config.extensionId) {
+      throw new BridgeError("BRIDGE_EXTENSION_MISMATCH", BRIDGE_ERROR_MESSAGES.BRIDGE_EXTENSION_MISMATCH);
+    }
     const sessionInfo = await readSession(config);
 
     const connectionOptions = {
       readConnections, readSelection, bridgeRequest, waitForLegacyBridge, launch, inspectRunning,
       ...(connectionWaitMs === undefined ? {} : { connectionWaitMs }),
       ...(sleep ? { sleep } : {}),
+      now,
       ...(command === "connect" && options.instance ? { instance: options.instance } : {}),
       refreshLogin: ["status", "parse", "download"].includes(command),
     };
