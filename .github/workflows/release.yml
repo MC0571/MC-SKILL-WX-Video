@@ -33,9 +33,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # release:package runs the regular build before creating the archives.
-      - run: npm run release:package
-      - run: node tests/skill-release-archive-smoke.mjs
+      - run: node scripts/build.mjs --release --component extension
       - run: npm run worker:build
       - run: (cd dist/release && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
@@ -79,7 +77,7 @@ jobs:
           SUBMIT_EXISTING_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.submit_existing_release || false }}
         run: |
           set -euo pipefail
-          tag="v${VERSION}"
+          tag="extension-v${VERSION}"
           tag_refs="$(git ls-remote origin "refs/tags/${tag}" "refs/tags/${tag}^{}")"
           tag_sha="$(printf '%s\n' "$tag_refs" | awk -v ref="refs/tags/${tag}" '$2 == ref "^{}" { peeled = $1 } $2 == ref { direct = $1 } END { if (peeled != "") print peeled; else if (direct != "") print direct }')"
           if [[ "$SUBMIT_EXISTING_RELEASE" == "true" && -z "$tag_sha" ]]; then
@@ -108,15 +106,13 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "$tag" \
-              --notes "Release ${tag}: Chrome extension package and standalone Skill."
+              --notes "Chrome extension release ${tag}."
           fi
 
           assets_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets)"
           temp_dir="$(mktemp -d "${RUNNER_TEMP}/release-assets.XXXXXX")"
           for asset in \
             "dist/release/weixin-channels-video-extension-v${VERSION}.zip" \
-            "dist/release/weixin-channels-video-skill-v${VERSION}.tar.gz" \
-            "dist/release/weixin-channels-video-skill-v${VERSION}.zip" \
             "dist/release/SHA256SUMS"; do
             name="${asset##*/}"
             if jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$assets_json" >/dev/null; then

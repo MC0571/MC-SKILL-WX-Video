@@ -10,7 +10,18 @@ import {
   startDownload,
   waitForDownload,
 } from "../extension/app.mjs";
+import { createAgentCommandHandler } from "../extension/agent.mjs";
 import { createLoginStateManager, getInstanceId, LOGIN_REFRESH_ALARM, LOGIN_STORAGE_KEY } from "../extension/agent-state.mjs";
+import {
+  RELEASE_CHECK_STORAGE_KEY,
+  STORE_EXTENSION_ID,
+  UPDATE_ACTION_TYPE,
+  UPDATE_STATE_CHANGED_TYPE,
+  UPDATE_STATE_TYPE,
+  UPDATE_STORAGE_KEY,
+  createUpdateStateManager,
+} from "../extension/update-state.mjs";
+import { initializeUpdateUi } from "../extension/update-ui.mjs";
 import { API_URLS } from "../src/core.mjs";
 
 function createHiddenIframeHarness() {
@@ -108,15 +119,16 @@ async function withHiddenIframeHarness(harness, callback) {
   }
 }
 
-async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [LOGIN_STORAGE_KEY]: { login: "anonymous", checkedAt: Date.now() } }, initialAlarms = {}, offscreenMessenger } = {}, callback) {
+async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [LOGIN_STORAGE_KEY]: { login: "anonymous", checkedAt: Date.now() } }, initialAlarms = {}, offscreenMessenger, extensionId = "synthetic-extension-id", pageContexts = [] } = {}, callback) {
   const previousChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
   const previousFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const previousSetTimeout = Object.getOwnPropertyDescriptor(globalThis, "setTimeout");
   const previousClearTimeout = Object.getOwnPropertyDescriptor(globalThis, "clearTimeout");
-  const extensionId = "synthetic-extension-id";
   const rules = new Map();
   const updates = [];
+  const timeline = [];
   const fetchCalls = [];
+  const releaseFetchCalls = [];
   let messageListener;
   const event = () => {
     const listeners = new Set();
@@ -131,15 +143,21 @@ async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [
   const onInstalled = event();
   const onAlarm = event();
   const onDownloadDeterminingFilename = event();
+  const onDownloadCreated = event();
   const onDownloadChanged = event();
+  const onUpdateAvailable = event();
+  const onTabRemoved = event();
   const storage = new Map(Object.entries(initialStorage));
   const alarms = new Map(Object.entries(initialAlarms));
+  const tabContexts = pageContexts;
   const ports = [];
   let offscreenCreated = false;
   const chromeApi = {
     downloads: {
       onDeterminingFilename: onDownloadDeterminingFilename,
+      onCreated: onDownloadCreated,
       onChanged: onDownloadChanged,
+      async search() { return []; },
     },
     runtime: {
       id: extensionId,
@@ -147,9 +165,12 @@ async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [
       onMessage: { addListener: (listener) => { messageListener = listener; } },
       onStartup,
       onInstalled,
+      onUpdateAvailable,
       getContexts: async (filter) => filter.contextTypes.includes("OFFSCREEN_DOCUMENT")
         ? (offscreenCreated ? [{ contextType: "OFFSCREEN_DOCUMENT" }] : [])
-        : [],
+        : tabContexts,
+      getManifest: () => ({ version: "0.2.4" }),
+      reload() { timeline.push("reload"); },
       sendMessage: async (message) => {
         if (!offscreenMessenger) throw new Error("no offscreen test responder");
         return offscreenMessenger(message);
@@ -161,8 +182,8 @@ async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [
           onDisconnect: event(),
           messages: [],
           disconnects: 0,
-          postMessage(value) { this.messages.push(value); },
-          disconnect() { this.disconnects += 1; void this.onDisconnect.fire(); },
+          postMessage(value) { this.messages.push(value); timeline.push("postMessage"); },
+          disconnect() { this.disconnects += 1; timeline.push("disconnect"); void this.onDisconnect.fire(); },
         };
         ports.push(port);
         return port;
@@ -189,13 +210,24 @@ async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [
         for (const rule of change.addRules ?? []) rules.set(rule.id, structuredClone(rule));
       },
     },
-    action: { onClicked: { addListener() {} } },
-    tabs: { create() {} },
+    action: { onClicked: { addListener() {} }, async setBadgeText() {} },
+    tabs: { create() {}, onRemoved: onTabRemoved },
+    windows: { update() {} },
+    management: { getSelf: async () => ({ id: extensionId, installType: "normal" }) },
   };
   Object.defineProperty(globalThis, "chrome", { configurable: true, value: chromeApi });
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (url, init) => {
+      if (String(url).startsWith("https://api.github.com/repos/MC0571/weixin-channels-video/releases?")) {
+        releaseFetchCalls.push({ url, init });
+        return Response.json([{
+          tag_name: "extension-v0.2.4",
+          draft: false,
+          prerelease: false,
+          assets: [{ name: "weixin-channels-video-extension-v0.2.4.zip" }],
+        }]);
+      }
       fetchCalls.push({ url, init });
       return fetchImpl ? fetchImpl(url, init) : Response.json({ ok: true });
     },
@@ -221,8 +253,8 @@ async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [
       if (handled !== true) resolve(undefined);
     });
     return await callback({
-      chromeApi, extensionId, fetchCalls, updates, rules, send,
-      onStartup, onInstalled, onAlarm, storage, alarms, ports,
+      chromeApi, extensionId, fetchCalls, releaseFetchCalls, updates, rules, send,
+      onStartup, onInstalled, onAlarm, onUpdateAvailable, storage, alarms, ports, timeline,
       get offscreenCreated() { return offscreenCreated; },
     });
   } finally {
@@ -653,7 +685,7 @@ test("download status survives reopening through Chrome's own recent download hi
   };
 
   const item = await latestDownload(chromeApi);
-  assert.deepEqual(query, { orderBy: ["-startTime"], limit: 50 });
+  assert.deepEqual(query, { orderBy: ["-startTime"], limit: 100 });
   assert.equal(item.filename, "/tmp/clip.mp4");
   assert.equal(downloadStatus(item), "正在下载 · clip.mp4");
   assert.equal(downloadStatus(null), "还没有下载记录。");
@@ -730,6 +762,328 @@ test("manifest requests only required extension and upstream-host permissions", 
   assert.match(await readFile(new URL("../extension/offscreen.html", import.meta.url), "utf8"), /offscreen\.js/);
 });
 
+test("successful Agent parses trigger the shared first-success hook without opening the page", async () => {
+  const successes = [];
+  const handler = createAgentCommandHandler({
+    chromeApi: {},
+    requestFactory: () => async () => new Response(null, { status: 200 }),
+    parser: async () => ({
+      title: "A title",
+      author: "An author",
+      coverUrl: "https://media.example/cover.jpg",
+      previewUrl: "https://media.example/video.mp4",
+      downloadUrl: "https://media.example/video.mp4",
+      mediaVariants: [],
+    }),
+    onParseSuccess: async ({ source }) => { successes.push(source); },
+  });
+
+  const response = await handler({
+    id: "323e4567-e89b-42d3-a456-426614174000",
+    command: "parse",
+    url: "https://weixin.qq.com/sph/synthetic",
+  }, { source: "agent" });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(successes, ["agent"]);
+});
+
+test("update notice mounts beside the header so it stays visible on the history page", async () => {
+  class Element {
+    constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; }
+    get nextSibling() {
+      if (!this.parentNode) return null;
+      return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] ?? null;
+    }
+    append(...children) {
+      for (const child of children) {
+        child.parentNode = this;
+        this.children.push(child);
+      }
+    }
+    insertBefore(child, reference) {
+      if (reference && reference.parentNode !== this) throw new Error("reference is not a child");
+      child.parentNode = this;
+      const index = reference ? this.children.indexOf(reference) : this.children.length;
+      this.children.splice(index, 0, child);
+    }
+    setAttribute() {}
+    addEventListener() {}
+  }
+
+  const shell = new Element("main");
+  const header = new Element("header");
+  header.className = "page-header";
+  const homeView = new Element("div");
+  const inputCard = new Element("section");
+  inputCard.className = "input-card";
+  const historyView = new Element("section");
+  historyView.hidden = true;
+  shell.append(header, homeView, historyView);
+  homeView.append(inputCard);
+  const documentApi = {
+    querySelector(selector) {
+      return selector === ".shell" ? shell
+        : selector === ".input-card" ? inputCard
+          : selector === ".page-header" ? header
+            : null;
+    },
+    createElement: (tagName) => new Element(tagName),
+  };
+
+  initializeUpdateUi({ documentApi, chromeApi: { runtime: { sendMessage: async () => ({ ok: true, source: "unknown" }) } } });
+
+  assert.equal(shell.children[1].className, "card update-card");
+  assert.equal(homeView.children[0], inputCard);
+  assert.equal(shell.children[2], homeView);
+  assert.equal(shell.children[3], historyView);
+});
+
+test("external installs check only stable extension releases and cache the result", async () => {
+  const storage = new Map();
+  const requests = [];
+  const notifications = [];
+  const badgeTexts = [];
+  let currentTime = 1_000_000;
+  const chromeApi = {
+    management: { getSelf: async () => ({ id: "unpacked-id", installType: "development" }) },
+    action: { setBadgeText: async ({ text }) => { badgeTexts.push(text); } },
+    runtime: {
+      getManifest: () => ({ version: "0.2.4" }),
+      sendMessage: async (message) => { notifications.push(message); },
+    },
+    storage: { local: {
+      async get(key) { return { [key]: storage.get(key) }; },
+      async set(values) { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+    } },
+  };
+  const olderReleases = [
+    { tag_name: "extension-v0.2.3", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v0.2.3.zip" }] },
+    { tag_name: "extension-v9.0.0-rc.1", draft: false, prerelease: true },
+    { tag_name: "extension-v8.0.0", draft: true, prerelease: false },
+    ...Array.from({ length: 97 }, (_, index) => ({
+      tag_name: `skill-v${index + 1}.0.0`, draft: false, prerelease: false,
+    })),
+  ];
+  const manager = createUpdateStateManager({
+    chromeApi,
+    now: () => currentTime,
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      const page = new URL(url).searchParams.get("page");
+      return Response.json(page === "1" ? olderReleases : [
+        { tag_name: "extension-v0.2.5", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v0.2.5.zip" }] },
+        { tag_name: "skill-v99.0.0", draft: false, prerelease: false },
+      ]);
+    },
+  });
+
+  const initialState = await manager.getState();
+  assert.equal(initialState.releaseStatus, "checking");
+  for (let attempt = 0; attempt < 20 && notifications.length === 0; attempt += 1) await new Promise(setImmediate);
+  assert.equal(notifications[0].type, UPDATE_STATE_CHANGED_TYPE);
+  const checkedState = await manager.getState();
+  assert.equal(checkedState.releaseStatus, "available");
+  assert.equal(checkedState.releaseVersion, "0.2.5");
+  assert.equal(checkedState.releaseChangelogUrl, "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5");
+  assert.equal(badgeTexts.at(-1), "更新");
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map(({ url }) => url), [
+    "https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=1",
+    "https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=2",
+  ]);
+  for (const { init } of requests) {
+    assert.equal(init.credentials, "omit");
+    assert.equal(init.redirect, "error");
+    assert.equal(init.headers.Accept, "application/vnd.github+json");
+    assert.equal(Object.hasOwn(init.headers, "Authorization"), false);
+    assert.equal(init.signal.aborted, false);
+  }
+  assert.equal((await manager.getState()).releaseStatus, "available");
+  assert.equal(requests.length, 2, "a fresh result is reused rather than fetched on every page open");
+
+  currentTime += 24 * 60 * 60 * 1000;
+  assert.equal((await manager.getState()).releaseStatus, "checking");
+  for (let attempt = 0; attempt < 20 && notifications.length < 2; attempt += 1) await new Promise(setImmediate);
+  assert.equal((await manager.getState()).releaseVersion, "0.2.5");
+  assert.equal(requests.length, 4);
+  assert.equal(storage.has(RELEASE_CHECK_STORAGE_KEY), true);
+});
+
+test("failed or malformed release checks remain unknown", async () => {
+  for (const [name, response] of [
+    ["rate limit", new Response("", { status: 403 })],
+    ["malformed JSON", new Response("not json", { status: 200 })],
+    ["unexpected shape", Response.json({ releases: [] })],
+    ["no extension release", Response.json([{ tag_name: "skill-v9.0.0", draft: false, prerelease: false }])],
+  ]) {
+    const storage = new Map();
+    const chromeApi = {
+      management: { getSelf: async () => ({ id: "unpacked-id", installType: "development" }) },
+      action: { setBadgeText: async () => {} },
+      runtime: { getManifest: () => ({ version: "0.2.4" }), sendMessage: async () => {} },
+      storage: { local: {
+        async get(key) { return { [key]: storage.get(key) }; },
+        async set(values) { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+      } },
+    };
+    const manager = createUpdateStateManager({ chromeApi, fetchImpl: async () => response });
+    assert.equal((await manager.getState()).releaseStatus, "checking", name);
+    for (let attempt = 0; attempt < 20 && !storage.has(RELEASE_CHECK_STORAGE_KEY); attempt += 1) await new Promise(setImmediate);
+    const state = await manager.getState();
+    assert.equal(state.releaseStatus, "unknown", name);
+    assert.equal(state.releaseVersion, null, name);
+  }
+});
+
+test("legacy stable releases count only when they include the extension archive", async () => {
+  const storage = new Map();
+  const chromeApi = {
+    management: { getSelf: async () => ({ id: "unpacked-id", installType: "development" }) },
+    action: { setBadgeText: async () => {} },
+    runtime: { getManifest: () => ({ version: "0.2.4" }), sendMessage: async () => {} },
+    storage: { local: {
+      async get(key) { return { [key]: storage.get(key) }; },
+      async set(values) { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+    } },
+  };
+  const manager = createUpdateStateManager({
+    chromeApi,
+    fetchImpl: async () => Response.json([
+      { tag_name: "v0.3.0", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v0.3.0.zip" }] },
+      { tag_name: "v9.0.0", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-skill-v9.0.0.zip" }] },
+    ]),
+  });
+
+  assert.equal((await manager.getState()).releaseStatus, "checking");
+  for (let attempt = 0; attempt < 20 && !storage.has(RELEASE_CHECK_STORAGE_KEY); attempt += 1) await new Promise(setImmediate);
+  const state = await manager.getState();
+  assert.equal(state.releaseStatus, "available");
+  assert.equal(state.releaseVersion, "0.3.0");
+  assert.equal(state.releaseChangelogUrl, "https://github.com/MC0571/weixin-channels-video/releases/tag/v0.3.0");
+});
+
+test("external update notice is dismissible without clearing update state", async () => {
+  class Element {
+    constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; this.listeners = new Map(); }
+    get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
+    append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
+    insertBefore(child, reference) { child.parentNode = this; this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, child); }
+    setAttribute() {}
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    click() { this.listeners.get("click")?.(); }
+  }
+  const shell = new Element("main");
+  const header = new Element("header");
+  header.className = "page-header";
+  const inputCard = new Element("section");
+  inputCard.className = "input-card";
+  shell.append(header, inputCard);
+  let state = { ok: true, source: "external", version: "0.2.4", releaseStatus: "unknown", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" };
+  let onMessage;
+  const sentMessages = [];
+  const documentApi = {
+    querySelector(selector) { return selector === ".shell" ? shell : selector === ".input-card" ? inputCard : selector === ".page-header" ? header : null; },
+    createElement: (tagName) => new Element(tagName),
+  };
+  const chromeApi = {
+    runtime: {
+      sendMessage: async (message) => { sentMessages.push(message); return state; },
+      onMessage: { addListener(listener) { onMessage = listener; } },
+    },
+  };
+  initializeUpdateUi({ documentApi, chromeApi });
+  const card = shell.children[1];
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, true, "routine unknown state stays out of the way");
+
+  state = {
+    ...state,
+    releaseStatus: "available",
+    releaseVersion: "0.2.5",
+    releaseChangelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5",
+  };
+  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, false);
+  assert.equal(card.children[0].textContent, "扩展有新版 v0.2.5。请按原安装方式更新。");
+  assert.equal(card.children[1].href, state.releaseChangelogUrl);
+  const dismissButton = card.children[3];
+  assert.equal(dismissButton.hidden, false);
+  dismissButton.click();
+  assert.equal(card.hidden, true);
+  assert.equal(sentMessages.some((message) => message.action === "acknowledge-updated"), false);
+
+  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, true, "closing hides this version for the current page only");
+  state.releaseVersion = "0.2.6";
+  state.releaseChangelogUrl = "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.6";
+  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, false, "a newly available version can be shown later");
+});
+
+test("store update reload waits for an active feed response to finish", async () => {
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+  const request = createFeedRequest();
+  const pageContexts = [{ tabId: 4, windowId: 2 }];
+  await withBackgroundHarness({
+    extensionId: STORE_EXTENSION_ID,
+    pageContexts,
+    fetchImpl: async () => {
+      await fetchGate;
+      return { status: 200, ok: true, text: async () => "{}" };
+    },
+  }, async ({ fetchCalls, onUpdateAvailable, send, storage, timeline }) => {
+    const activeRequest = send(request);
+    for (let attempt = 0; attempt < 20 && fetchCalls.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fetchCalls.length, 1);
+
+    await onUpdateAvailable.fire({ version: "0.2.5" });
+    for (let attempt = 0; attempt < 20 && storage.get(UPDATE_STORAGE_KEY)?.availableVersion !== "0.2.5"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(storage.get(UPDATE_STORAGE_KEY)?.availableVersion, "0.2.5");
+    const status = await send({ type: UPDATE_STATE_TYPE });
+    assert.equal(status.source, "store");
+    assert.equal(status.status, "available");
+    const requestedUpdate = await send({ type: UPDATE_ACTION_TYPE, action: "apply" });
+    assert.equal(requestedUpdate.status, "waiting");
+    assert.equal(timeline.includes("reload"), false);
+
+    releaseFetch();
+    assert.deepEqual(await activeRequest, { status: 200, body: "{}" });
+    for (let attempt = 0; attempt < 20 && !timeline.includes("reload"); attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(timeline.includes("reload"), true);
+    assert.equal(pageContexts.length, 1, "an explicit apply can reload while its page remains open");
+  });
+});
+
+test("explicit store update reloads an idle open page after responding to the action", async () => {
+  const pageContexts = [{ tabId: 11, windowId: 3 }];
+  await withBackgroundHarness({ extensionId: STORE_EXTENSION_ID, pageContexts }, async ({ onUpdateAvailable, send, storage, timeline }) => {
+    await onUpdateAvailable.fire({ version: "0.2.5" });
+    for (let attempt = 0; attempt < 20 && storage.get(UPDATE_STORAGE_KEY)?.availableVersion !== "0.2.5"; attempt += 1) await new Promise(setImmediate);
+    const response = await send({ type: UPDATE_ACTION_TYPE, action: "apply" });
+    assert.equal(response.status, "waiting");
+    for (let attempt = 0; attempt < 20 && !timeline.includes("reload"); attempt += 1) await new Promise(setImmediate);
+    assert.equal(timeline.includes("reload"), true);
+    assert.equal(pageContexts.length, 1);
+  });
+});
+
+test("automatic store update waits for the open page until the user chooses apply", async () => {
+  const pageContexts = [{ tabId: 12, windowId: 3 }];
+  await withBackgroundHarness({ extensionId: STORE_EXTENSION_ID, pageContexts }, async ({ onUpdateAvailable, send, storage, timeline }) => {
+    await onUpdateAvailable.fire({ version: "0.2.5" });
+    for (let attempt = 0; attempt < 20 && storage.get(UPDATE_STORAGE_KEY)?.availableVersion !== "0.2.5"; attempt += 1) await new Promise(setImmediate);
+    const state = await send({ type: UPDATE_STATE_TYPE });
+    assert.equal(state.status, "available");
+    assert.equal(timeline.includes("reload"), false);
+    assert.equal(pageContexts.length, 1);
+  });
+});
+
 test("toolbar action focuses the existing page or creates one", async () => {
   const previousChrome = globalThis.chrome;
   let onClicked;
@@ -740,27 +1094,35 @@ test("toolbar action focuses the existing page or creates one", async () => {
   globalThis.chrome = {
     downloads: {
       onDeterminingFilename: { addListener() {} },
+      onCreated: { addListener() {} },
       onChanged: { addListener() {} },
+      search: async () => [],
     },
-    action: { onClicked: { addListener: (listener) => { onClicked = listener; } } },
+    action: { onClicked: { addListener: (listener) => { onClicked = listener; } }, async setBadgeText() {} },
     runtime: {
+      id: "synthetic-id",
       getURL: (path) => `chrome-extension://synthetic-id/${path}`,
       onMessage: { addListener() {} },
       onStartup: { addListener() {} },
       onInstalled: { addListener() {} },
+      onUpdateAvailable: { addListener() {} },
       getContexts: async (filter) => {
         assert.deepEqual(filter, { contextTypes: ["TAB"], documentUrls: ["chrome-extension://synthetic-id/index.html"] });
         return queried;
       },
+      getManifest: () => ({ version: "0.2.4" }),
+      reload() {},
     },
     storage: { local: { get: async () => ({}), set: async () => {} } },
     alarms: { onAlarm: { addListener() {} }, clear: async () => true, create() {} },
     windows: { update: async (id, properties) => { focusedWindows.push({ id, properties }); } },
     tabs: {
+      onRemoved: { addListener() {} },
       update: async (id, properties) => { focusedTabs.push({ id, properties }); },
       create: async (properties) => { createdTabs.push(properties); },
     },
     declarativeNetRequest: { updateSessionRules: async () => {} },
+    management: { getSelf: async () => ({ id: "synthetic-id", installType: "normal" }) },
   };
 
   try {

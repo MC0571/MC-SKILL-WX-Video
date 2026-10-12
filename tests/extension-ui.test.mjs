@@ -1,0 +1,316 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { LINKS } from "../extension/config.mjs";
+import { initializeEngagementUi, FIRST_OPEN_GUIDE_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY } from "../extension/engagement.mjs";
+import { initializeDownloadHistoryUi } from "../extension/history-ui.mjs";
+import { createAgentCommandHandler } from "../extension/agent.mjs";
+import { recordSuccessfulParse } from "../extension/engagement.mjs";
+
+class FixtureElement {
+  constructor(tagName = "div") {
+    this.tagName = tagName;
+    this.children = [];
+    this.listeners = new Map();
+    this.attributes = new Map();
+    this.dataset = {};
+    this.hidden = false;
+    this.disabled = false;
+    this.textContent = "";
+    this.className = "";
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  async click() {
+    if (this.disabled) return;
+    await Promise.all((this.listeners.get("click") ?? []).map((listener) => listener({ target: this })));
+  }
+
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = [...children]; }
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  focus() {}
+}
+
+class FixtureDocument {
+  constructor(selectors) {
+    this.elements = new Map(selectors.map((selector) => [selector, new FixtureElement()]));
+    for (const selector of [
+      "#first-open-guide", "#review-prompt", "#recent-download-empty", "#history-view",
+      "#download-history-empty", "#history-load-more", "#login-status", "#yuanbao-login-link",
+    ]) {
+      const element = this.elements.get(selector);
+      if (element) element.hidden = true;
+    }
+  }
+
+  querySelector(selector) { return this.elements.get(selector) ?? null; }
+  createElement(tagName) { return new FixtureElement(tagName); }
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function makeChromeApi({ items = [], storage = {}, sourceId = "jdecfnemmnhbpamcfhmgjkcphgomgjoe", installType = "normal", onShow = () => {} } = {}) {
+  const storageListeners = new Set();
+  const createdListeners = new Set();
+  const downloadListeners = new Set();
+  const erasedListeners = new Set();
+  const state = { ...storage };
+  const chromeApi = {
+    runtime: { id: "fixture-extension" },
+    management: { getSelf: async () => ({ id: sourceId, installType }) },
+    storage: {
+      local: {
+        async get(keys) {
+          if (typeof keys === "string") return { [keys]: state[keys] };
+          if (Array.isArray(keys)) return Object.fromEntries(keys.filter((key) => key in state).map((key) => [key, state[key]]));
+          return { ...state };
+        },
+        async set(values) {
+          Object.assign(state, values);
+          const changes = Object.fromEntries(Object.entries(values).map(([key, newValue]) => [key, { newValue }]));
+          for (const listener of storageListeners) listener(changes, "local");
+        },
+      },
+      onChanged: {
+        addListener: (listener) => storageListeners.add(listener),
+        removeListener: (listener) => storageListeners.delete(listener),
+      },
+    },
+    downloads: {
+      onCreated: {
+        addListener: (listener) => createdListeners.add(listener),
+        removeListener: (listener) => createdListeners.delete(listener),
+      },
+      onChanged: {
+        addListener: (listener) => downloadListeners.add(listener),
+        removeListener: (listener) => downloadListeners.delete(listener),
+      },
+      onErased: {
+        addListener: (listener) => erasedListeners.add(listener),
+        removeListener: (listener) => erasedListeners.delete(listener),
+      },
+      async search(query) {
+        let found = [...items];
+        if (query.id !== undefined) found = found.filter((item) => item.id === query.id);
+        if (query.startTime !== undefined) {
+          found = found.filter((item) => Date.parse(item.startTime) === Date.parse(query.startTime));
+        }
+        if (query.startedBefore !== undefined) {
+          found = found.filter((item) => Date.parse(item.startTime) < Date.parse(query.startedBefore));
+        }
+        if (query.startedAfter !== undefined) {
+          found = found.filter((item) => Date.parse(item.startTime) > Date.parse(query.startedAfter));
+        }
+        if (query.orderBy) {
+          const direction = query.orderBy[0].startsWith("-") ? -1 : 1;
+          found.sort((a, b) => direction * (Date.parse(a.startTime) - Date.parse(b.startTime)));
+        }
+        return query.limit === undefined || query.limit === 0 ? found : found.slice(0, query.limit);
+      },
+      show: onShow,
+    },
+  };
+  return { chromeApi, state, storageListeners };
+}
+
+const historySelectors = [
+  "#recent-download-list", "#recent-download-empty", "#home-view", "#history-view",
+  "#open-download-history", "#history-back", "#history-heading", "#download-history-list",
+  "#download-history-empty", "#history-order-toggle", "#history-load-more", "#history-status",
+];
+
+function download(id, { exists = true, state = "complete" } = {}) {
+  return {
+    id,
+    byExtensionId: "fixture-extension",
+    filename: `/downloads/clip-${id}.mp4`,
+    startTime: `2026-10-12T10:${String(id % 60).padStart(2, "0")}:00.000Z`,
+    state,
+    exists,
+    bytesReceived: 2048,
+    totalBytes: 2048,
+  };
+}
+
+test("engagement UI uses configured links, records the first guide, and merges a late initial storage read", async () => {
+  const selectors = [
+    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
+    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+  ];
+  const documentApi = new FixtureDocument(selectors);
+  const initialRead = deferred();
+  const { chromeApi, state, storageListeners } = makeChromeApi();
+  const normalGet = chromeApi.storage.local.get.bind(chromeApi.storage.local);
+  chromeApi.storage.local.get = (keys) => Array.isArray(keys) ? initialRead.promise : normalGet(keys);
+
+  initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  assert.equal(documentApi.querySelector("#repository-link").href, LINKS.repository);
+  assert.equal(documentApi.querySelector("#guide-repository-link").href, LINKS.repository);
+  assert.equal(documentApi.querySelector("#privacy-link").href, LINKS.privacy);
+  assert.equal(documentApi.querySelector("#feedback-link").href, LINKS.feedback);
+  assert.equal(documentApi.querySelector("#review-link").href, LINKS.storeReview);
+
+  await chromeApi.storage.local.set({ [FIRST_SUCCESSFUL_PARSE_KEY]: 101 });
+  assert.equal(Number.isFinite(state[FIRST_SUCCESSFUL_PARSE_KEY]), true);
+  assert.equal(storageListeners.size, 1);
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
+  initialRead.resolve({
+    [FIRST_OPEN_GUIDE_KEY]: false,
+    [FIRST_SUCCESSFUL_PARSE_KEY]: -1,
+    [REVIEW_PROMPT_HANDLED_KEY]: false,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(documentApi.querySelector("#first-open-guide").hidden, false);
+  assert.equal(state[FIRST_OPEN_GUIDE_KEY], true);
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, false);
+  assert.equal(Number.isFinite(state[FIRST_SUCCESSFUL_PARSE_KEY]), true);
+  assert.equal(state[FIRST_SUCCESSFUL_PARSE_KEY], 101);
+  await documentApi.querySelector("#review-dismiss").click();
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
+  assert.equal(state[REVIEW_PROMPT_HANDLED_KEY], true);
+});
+
+test("page and Agent success events reach the prompt through shared storage; failed parses do not", async () => {
+  const documentApi = new FixtureDocument([
+    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
+    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+  ]);
+  const { chromeApi, state } = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
+  initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
+
+  const video = {
+    title: "A title", author: "An author", coverUrl: "https://media.example/cover.jpg",
+    previewUrl: "https://media.example/video.mp4", downloadUrl: "https://media.example/video.mp4",
+    mediaVariants: [],
+  };
+  const handler = (parser) => createAgentCommandHandler({
+    chromeApi,
+    parser,
+    requestFactory: () => async () => new Response(null, { status: 200 }),
+    onParseSuccess: () => recordSuccessfulParse(chromeApi),
+  });
+  const request = { id: "323e4567-e89b-42d3-a456-426614174000", command: "parse", url: "https://weixin.qq.com/sph/synthetic" };
+  assert.equal((await handler(async () => video)(request, { source: "page" })).ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const firstSuccessAt = state[FIRST_SUCCESSFUL_PARSE_KEY];
+  assert.equal(Number.isFinite(firstSuccessAt), true);
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, false);
+
+  assert.equal((await handler(async () => video)(request, { source: "agent" })).ok, true);
+  assert.equal(state[FIRST_SUCCESSFUL_PARSE_KEY], firstSuccessAt);
+
+  const failedFixture = new FixtureDocument([
+    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
+    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+  ]);
+  const failedApi = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
+  initializeEngagementUi({ chromeApi: failedApi.chromeApi, documentApi: failedFixture, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failure = await createAgentCommandHandler({
+    chromeApi: failedApi.chromeApi,
+    parser: async () => { throw new Error("synthetic parse failure"); },
+    requestFactory: () => async () => new Response(null, { status: 200 }),
+    onParseSuccess: () => recordSuccessfulParse(failedApi.chromeApi),
+  })(request, { source: "agent" });
+  assert.equal(failure.ok, false);
+  assert.equal(failedApi.state[FIRST_SUCCESSFUL_PARSE_KEY], undefined);
+  assert.equal(failedFixture.querySelector("#review-prompt").hidden, true);
+});
+
+test("review prompt stays hidden for unpacked installs while the configured feedback link stays available", async () => {
+  const documentApi = new FixtureDocument([
+    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
+    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+  ]);
+  const { chromeApi } = makeChromeApi({
+    sourceId: "unpacked-id",
+    storage: { [FIRST_OPEN_GUIDE_KEY]: true, [FIRST_SUCCESSFUL_PARSE_KEY]: 12 },
+  });
+  initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
+  assert.equal(documentApi.querySelector("#first-open-guide").hidden, true);
+  assert.equal(documentApi.querySelector("#feedback-link").hidden, false);
+});
+
+test("missing download rows remain gray with precise status, and failed reveal remains retryable", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const missing = download(1, { exists: false });
+  let showAttempts = 0;
+  const existing = download(2);
+  const { chromeApi } = makeChromeApi({ items: [missing, existing], onShow: () => {
+    showAttempts += 1;
+    if (showAttempts === 1) throw new Error("temporary error");
+  } });
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const firstSectionList = documentApi.querySelector("#download-history-list").children[0].children[1];
+  const missingRow = firstSectionList.children.find((row) => row.dataset.fileMissing === "true");
+  assert.ok(missingRow);
+  assert.equal(missingRow.children[0].children.at(-1).textContent, "文件已移除或移动");
+  assert.equal(missingRow.children.length, 1);
+
+  const existingRow = firstSectionList.children.find((row) => row.dataset.fileMissing === "false");
+  const revealButton = existingRow.children.at(-1);
+  existing.exists = undefined;
+  await revealButton.click();
+  assert.equal(revealButton.textContent, "状态未知，重试");
+  assert.equal(revealButton.disabled, false);
+  existing.exists = true;
+  await revealButton.click();
+  assert.equal(revealButton.textContent, "打开失败，重试");
+  assert.equal(revealButton.disabled, false);
+  await revealButton.click();
+  assert.equal(revealButton.textContent, "已在文件夹中显示");
+  assert.equal(revealButton.disabled, false);
+  await revealButton.click();
+  assert.equal(revealButton.disabled, false);
+  assert.equal(showAttempts, 3);
+});
+
+test("failed load-more keeps a retry action and succeeds on the next click", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const items = Array.from({ length: 21 }, (_, index) => download(index + 1));
+  const { chromeApi } = makeChromeApi({ items });
+  let failNextSearch = false;
+  const search = chromeApi.downloads.search.bind(chromeApi.downloads);
+  chromeApi.downloads.search = async (query) => {
+    if (query.id === undefined && failNextSearch) {
+      failNextSearch = false;
+      throw new Error("temporary read failure");
+    }
+    return search(query);
+  };
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const loadMore = documentApi.querySelector("#history-load-more");
+  assert.equal(loadMore.hidden, false);
+
+  failNextSearch = true;
+  await loadMore.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(loadMore.hidden, false);
+  assert.equal(loadMore.textContent, "重试加载更多");
+  assert.equal(loadMore.disabled, false);
+  await loadMore.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(documentApi.querySelector("#download-history-list").children[0].children[1].children.length, 21);
+  assert.equal(loadMore.hidden, true);
+});

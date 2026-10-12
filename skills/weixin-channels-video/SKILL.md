@@ -17,9 +17,9 @@ description: 通过本机 Chrome 扩展解析视频号分享链接并下载视�
 node <skill-root>/scripts/run.mjs prepare
 ```
 
-源码 Skill 的 `prepare` 下载最新稳定 Release 的独立运行资源，校验 SHA256 和 runtime package protocol 3，再写入按用户隔离的本地缓存。若尚无已发布且兼容 protocol 3 的资源，准确报告不兼容并停止；不要把旧版正式 Release 当作可用的新资源。普通 CLI 命令复用兼容缓存；首次缓存缺失时会准备后继续。独立 Skill Release 包自带运行资源，可离线准备。准备失败时停止并保留当前缓存。SHA256 校验不是签名验证。IPC protocol 2 的私有 HMAC 端点与 Native Messaging wire protocol 2 独立版本管理。
+源码 Skill 的 `prepare` 从正式 Releases 中选择最新稳定且兼容的 Skill 包；同版本优先选择 `skill-v…`，也接受带完整 Skill 归档的旧式 `v…` Release。只有归档元数据明确表明运行资源协议不兼容或当前 Node 低于最低版本时才跳过该候选继续查找；网络、元数据、哈希或归档校验失败时停止。选择前校验 SHA256，成功后写入按用户隔离的本地缓存。若没有兼容资源，准确报告并停止；不要把扩展 Release 当作 Skill 包，也不要清空当前缓存。普通 CLI 命令复用兼容缓存；首次缓存缺失时会准备后继续。独立 Skill Release 包自带运行资源，可离线准备。准备失败时保留当前缓存。SHA256 校验不是签名验证。IPC protocol 2 的私有 HMAC 端点与 Native Messaging wire protocol 2 独立版本管理。
 
-Skill 和 Chrome 扩展分别构建、发布和更新。扩展安装方式的选择见 [Agent 安装与本地运行边界](references/agent-installation.md)。Skill 包只含 CLI、Native Messaging host 和运行资源，不携带或管理扩展。桥接安装后通过 CLI 与扩展的真实 status 往返确认连接即可结束安装；不要求先登录元宝、解析或下载。扩展版本、host 版本、CLI 版本只按握手实际报告的值描述，缺失时写 `unknown`。
+Skill 和 Chrome 扩展分别构建、发布和更新。CLI 与 host 随同一个 Skill 包发布，扩展独立发布。组件版本用于追溯，不代表兼容性；通信兼容性由运行资源、Native Messaging wire protocol 和 IPC protocol 决定，不要求版本号相同。扩展安装方式的选择见 [Agent 安装与本地运行边界](references/agent-installation.md)。Skill 包只含 CLI、Native Messaging host 和运行资源，不携带或管理扩展。
 
 ## 连接与登录状态
 
@@ -45,6 +45,8 @@ node <skill-root>/scripts/run.mjs connections
 
 旧 Native Messaging wire v1 配对的扩展与新版 host 保持给旧 CLI 使用。新版 CLI 遇到 legacy 配置时明确提示升级，不回退到旧握手。新版扩展遇到旧 host 时，用 `install-bridge --extension-id <extension-id>` 更新桥接。同一扩展 ID、Chrome 用户目录与 profile 身份下，已有 IPC protocol 2 私有配置和 secret 在更新时保留；各组件版本按实际握手结果报告。
 
+连接确认后，读取一次 `status` 确认登录状态，并用普通语言给用户下一步：若已登录，说明可以开始，建议用户在微信找一个视频号、分享并复制链接交给 Agent 尝试解析或下载；若明确未登录，说明扩展通过腾讯元宝获取视频号信息，因此下载前需要登录，并提供 [腾讯元宝](https://yuanbao.tencent.com/) 入口，提醒在安装该扩展的 Chrome 用户中登录。检查失败或状态未知时，明确说暂时无法确认并建议检查或重试；不能把未知说成未登录或安装失败。登录指引不表示代用户登录，也不自动提交解析或下载任务。
+
 连接确认后调用：
 
 ```sh
@@ -52,6 +54,6 @@ node <skill-root>/scripts/run.mjs parse --url <share-link>
 node <skill-root>/scripts/run.mjs download --url <share-link> [--filename <relative-mp4-filename>]
 ```
 
-分享链接必须是 `https://weixin.qq.com/sph/...`。下载默认以视频标题命名；扩展清理非法字符、限制长度，重名时自动改名。`--filename` 仅接受 Chrome 下载目录中的相对 `.mp4` 路径。命令等待 Chrome 报告完成后返回视频信息、各版本媒体链接、最终路径和字节数；中断或超时报错。任务提交后断连或超时不得自动重发，避免重复下载。
+分享链接必须是 `https://weixin.qq.com/sph/...`。默认文件名由清理并缩短后的标题和浏览器本地日期组成（`短标题_YYYYMMDD.mp4`）；重名时 Chrome 使用 `uniquify` 自动追加后缀。显式 `--filename` 仅接受 Chrome 下载目录中的相对 `.mp4` 路径，并按该路径请求下载。命令等待 Chrome 报告完成后返回视频信息、各版本媒体链接、最终路径和字节数；中断或超时报错。任务提交后断连或超时不得自动重发，避免重复下载。
 
-回复时嵌入本次结果中的视频，并列出 `mediaVariants` 实际返回的版本链接。已下载时展示最终本地视频和路径；仅解析时展示 `previewUrl`，不为展示擅自下载。没有具体码率时不猜测。不要输出完整 JSON、Cookie、钥匙串凭据、内部 token/eid 或元宝 API 认证 URL。可在本次回复中展示 API 返回的预览和媒体版本链接，包括带签名参数的媒体链接；不要将临时媒体链接写入公共日志。
+回复使用用户本轮的语言，简短说明实际结果、必要状态和下一步。失败时说明用户受影响的结果及最短处理办法，并区分失败、未完成和无法确认。普通完成回复不输出完整 JSON、协议/实例/字段、命令或逐项安装步骤，也不复述复用浏览器、未读取凭据、未登录/未下载等执行约束；用户询问技术细节时再展开，必要的权限或人工操作照实说明。下载成功时展示实际文件和路径；仅解析时展示预览，不为展示擅自下载。嵌入本次结果中的视频并列出 `mediaVariants` 实际返回的版本链接；没有具体码率时不猜测。不要输出 Cookie、钥匙串凭据、内部 token/eid 或元宝 API 认证 URL。可在本次回复中展示返回的预览和媒体版本链接，包括带签名参数的媒体链接；不要将临时媒体链接写入公共日志。

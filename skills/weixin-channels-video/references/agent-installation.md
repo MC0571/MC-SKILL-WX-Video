@@ -35,8 +35,8 @@ Windows Chrome 需要 Windows Node 与 Windows 文件路径。WSL 中的 Node �
 
 Skill 与 Chrome 扩展分开安装和更新；Skill 包不包含扩展，也不管理扩展。扩展缺失时默认引导安装 Chrome Web Store 版本。只有用户明确选择非商店版时，才使用 GitHub Release 独立 ZIP 或源码构建产物：
 
-1. 从同一 GitHub Release 下载扩展 ZIP，并核对 `SHA256SUMS`；或按 [架构与维护说明](../../../docs/architecture.md#构建与发布)从源码构建。
+1. 从 `extension-v…` GitHub Release 下载扩展 ZIP，并核对该 Release 的 `SHA256SUMS`；或按 [架构与维护说明](../../../docs/architecture.md#构建与发布)从源码构建。
 2. 解压或构建到持续保留的位置，不放在 Skill 缓存中。开发者模式仅用于该非商店安装方式。
 3. 在所选 Chrome 用户的扩展详情页查看当前运行实例信息。扩展 ID 和实例绑定按 [Skill 指引](../SKILL.md)执行；本页不规定连接或恢复流程。
 
-商店审核与上线可能有延迟。GitHub 发布或送审不代表商店已经更新；若商店版缺少所需功能，可等待商店更新，或由用户明确选择非商店版。
+Skill 与扩展版本独立，版本不同本身不表示不兼容；以 Skill 的协议检查结果为准。商店审核与上线可能有延迟。GitHub 发布或送审不代表商店已经更新；若商店版缺少所需功能，可等待商店更新，或由用户明确选择非商店版。

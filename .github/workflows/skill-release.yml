@@ -1,0 +1,163 @@
+name: Skill Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - skills/weixin-channels-video/version.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_allowed: ${{ steps.version.outputs.release_allowed }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node scripts/build.mjs --release --component skill
+      - run: (cd dist/release && sha256sum -c SHA256SUMS)
+      - run: node tests/skill-release-archive-smoke.mjs
+      - name: Validate Skill release version
+        id: version
+        shell: bash
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("skills/weixin-channels-video/version.json", "utf8")).version)')"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$ ]]; then
+            echo "::error::Invalid Skill version"
+            exit 1
+          fi
+
+          release_allowed=false
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_allowed=true
+          elif git cat-file -e "$EVENT_BEFORE:skills/weixin-channels-video/version.json" 2>/dev/null; then
+            previous_version="$(git show "$EVENT_BEFORE:skills/weixin-channels-video/version.json" | node -e 'let value = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(value).version))')"
+            if [[ "$previous_version" != "$version" ]]; then
+              release_allowed=true
+            fi
+          fi
+
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "release_allowed=$release_allowed" >> "$GITHUB_OUTPUT"
+          if [[ "$release_allowed" != "true" ]]; then
+            echo "The Skill version file was introduced or unchanged; automatic publishing is skipped."
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.release_allowed == 'true'
+        with:
+          name: skill-release-assets
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.ref == 'refs/heads/main' && needs.checks.outputs.release_allowed == 'true'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: skill-release-assets
+          path: dist/release
+      - name: Create or verify Skill Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="skill-v$VERSION"
+
+          read_tag_sha() {
+            git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+              awk -v ref="refs/tags/$tag" '$2 == ref "^{}" { peeled = $1 } $2 == ref { direct = $1 } END { if (peeled != "") print peeled; else if (direct != "") print direct }'
+          }
+
+          tag_sha="$(read_tag_sha)"
+          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $tag already points to a different commit"
+            exit 1
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing release $tag is not anchored to this workflow commit"
+              exit 1
+            fi
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$tag" \
+              --notes "Skill release $tag."
+            tag_sha="$(read_tag_sha)"
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Created tag $tag does not point to this workflow commit"
+              exit 1
+            fi
+          fi
+
+          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)"
+          if ! jq -e '.isDraft == false and .isPrerelease == false' <<<"$release_json" >/dev/null; then
+            echo "::error::Existing release $tag must be published and stable"
+            exit 1
+          fi
+
+          temp_dir="$(mktemp -d "$RUNNER_TEMP/skill-release-assets.XXXXXX")"
+          trap 'rm -rf "$temp_dir"' EXIT
+          missing_assets=()
+          for name in \
+            "weixin-channels-video-skill-v$VERSION.tar.gz" \
+            "weixin-channels-video-skill-v$VERSION.zip" \
+            "SHA256SUMS"; do
+            if jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$release_json" >/dev/null; then
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$temp_dir"
+              if ! cmp -s "dist/release/$name" "$temp_dir/$name"; then
+                echo "::error::Existing release asset $name differs from the package for $GITHUB_SHA"
+                exit 1
+              fi
+            else
+              missing_assets+=("dist/release/$name")
+            fi
+          done
+
+          for asset in "${missing_assets[@]}"; do
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" "$asset"
+          done
+
+          final_assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets)"
+          for name in \
+            "weixin-channels-video-skill-v$VERSION.tar.gz" \
+            "weixin-channels-video-skill-v$VERSION.zip" \
+            "SHA256SUMS"; do
+            if ! jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$final_assets" >/dev/null; then
+              echo "::error::Skill release asset $name is missing after upload"
+              exit 1
+            fi
+          done

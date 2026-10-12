@@ -21,10 +21,10 @@ async function assertPrivateTree(path) {
   }
 }
 
-function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
+function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false, minimumNodeVersion = '22.22.2', tagName = 'skill-v' + version) {
   const archiveName = 'weixin-channels-video-skill-v' + version + '.tar.gz';
   const skillZipName = 'weixin-channels-video-skill-v' + version + '.zip';
-  const baseUrl = 'https://github.com/MC0571/weixin-channels-video/releases/download/v' + version;
+  const baseUrl = 'https://github.com/MC0571/weixin-channels-video/releases/download/' + tagName;
   const archive = skillArchive([
     ['weixin-channels-video', '', '5'],
     ['weixin-channels-video/assets', '', '5'],
@@ -37,7 +37,7 @@ function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
     ['weixin-channels-video/runtime.json', JSON.stringify({
       version,
       runtimeProtocol,
-      minimumNodeVersion: '22.22.2',
+      minimumNodeVersion,
     })],
     ['weixin-channels-video/scripts/run.mjs', 'export {};'],
     ['weixin-channels-video/scripts/cli.mjs', 'export {};'],
@@ -54,7 +54,7 @@ function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
     browser_download_url: baseUrl + '/' + name,
   });
   const release = {
-    tag_name: 'v' + version,
+    tag_name: tagName,
     draft: false,
     prerelease: false,
     assets: [
@@ -66,12 +66,13 @@ function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
   return { archive, archiveName, baseUrl, checksums, release };
 }
 
-function response(body, contentType) {
+function response(body, contentType, extraHeaders = {}) {
   const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return new Response(bytes, {
     headers: {
       'content-type': contentType,
       'content-length': String(bytes.length),
+      ...extraHeaders,
     },
   });
 }
@@ -118,18 +119,32 @@ test('Release preparation leaves legacy extension files untouched and commits on
       await secureWindowsPath(legacyMarker, { newlyCreated: true });
     }
 
-    let activeRelease = makeRelease('0.2.0');
-    const releasesApi = 'https://api.github.com/repos/MC0571/weixin-channels-video/releases/latest';
+    const newerExtensionRelease = {
+      tag_name: 'extension-v99.0.0', draft: false, prerelease: false, assets: [],
+    };
+    const incompatibleSkill = makeRelease('0.3.0', 4);
+    const incompatibleSameVersionSkill = makeRelease('0.2.4', 4);
+    const legacySkill = makeRelease('0.2.4', 3, false, '22.22.2', 'v0.2.4');
+    let releasePages = [
+      [newerExtensionRelease, incompatibleSkill.release],
+      [incompatibleSameVersionSkill.release, legacySkill.release],
+    ];
+    let releaseFixtures = [incompatibleSkill, incompatibleSameVersionSkill, legacySkill];
+    let failedDownloadUrl = null;
+    const releasesApi = 'https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=';
     globalThis.fetch = async (input) => {
       const url = String(input);
-      if (url === releasesApi) {
-        return response(JSON.stringify(activeRelease.release), 'application/vnd.github+json');
+      if (url === releasesApi + '1') {
+        return response(JSON.stringify(releasePages[0] ?? []), 'application/vnd.github+json',
+          releasePages.length > 1 ? { link: '<' + releasesApi + '2>; rel="next"' } : {});
       }
-      if (url === activeRelease.baseUrl + '/SHA256SUMS') {
-        return response(activeRelease.checksums, 'text/plain');
+      if (url === releasesApi + '2') {
+        return response(JSON.stringify(releasePages[1] ?? []), 'application/vnd.github+json');
       }
-      if (url === activeRelease.baseUrl + '/' + activeRelease.archiveName) {
-        return response(activeRelease.archive, 'application/gzip');
+      if (url === failedDownloadUrl) throw new Error('synthetic network failure');
+      for (const fixture of releaseFixtures) {
+        if (url === fixture.baseUrl + '/SHA256SUMS') return response(fixture.checksums, 'text/plain');
+        if (url === fixture.baseUrl + '/' + fixture.archiveName) return response(fixture.archive, 'application/gzip');
       }
       throw new Error('Unexpected runtime test URL: ' + url);
     };
@@ -155,37 +170,59 @@ test('Release preparation leaves legacy extension files untouched and commits on
     }
 
     const prepared = await prepare();
-    assert.equal(prepared.version, '0.2.0');
+    assert.equal(prepared.version, '0.2.4');
     assert.equal(prepared.runtimeProtocol, 3);
+    assert.equal('compatible' in prepared, false);
     assert.equal('extensionAssets' in prepared, false);
-    const cachedRuntime = join(cacheRoot, '0.2.0');
+    const cachedRuntime = join(cacheRoot, '0.2.4');
     assert.equal((await readdir(cachedRuntime)).sort().join(','), 'runtime.json,scripts');
     assert.equal((await readdir(join(cachedRuntime, 'scripts'))).sort().join(','), 'cli.mjs,native-host.mjs');
     await assert.rejects(lstat(join(cachedRuntime, 'SKILL.md')), { code: 'ENOENT' });
     await assert.rejects(lstat(join(cachedRuntime, 'scripts', 'run.mjs')), { code: 'ENOENT' });
     await assert.rejects(lstat(join(cachedRuntime, 'assets', 'extension')), { code: 'ENOENT' });
-    assert.equal((await prepare()).version, '0.2.0');
+    assert.equal((await prepare()).version, '0.2.4');
     assert.equal(await runtime.run(['status']), 0);
     const committedMarker = await readFile(join(cacheRoot, 'current.json'), 'utf8');
     assert.deepEqual(JSON.parse(committedMarker), {
-      version: '0.2.0',
+      version: '0.2.4',
       runtimeProtocol: 3,
     });
-    await assertCommitted('0.2.0', committedMarker);
+    await assertCommitted('0.2.4', committedMarker);
     if (process.platform === 'win32') {
       await assertPrivateTree(cacheRoot);
       await assertPrivateTree(oldExtension);
     }
 
-    activeRelease = makeRelease('0.3.0', 3, true);
+    const badHashRelease = makeRelease('0.4.0', 3, true);
+    releaseFixtures = [badHashRelease, legacySkill];
+    releasePages = [[newerExtensionRelease, badHashRelease.release], [legacySkill.release]];
     await assert.rejects(prepare(), /SHA256/);
-    await assertCommitted('0.2.0', committedMarker);
-    await assert.rejects(lstat(join(cacheRoot, '0.3.0')), { code: 'ENOENT' });
-
-    activeRelease = makeRelease('0.4.0', 2);
-    await assert.rejects(prepare(), /版本不兼容/);
-    await assertCommitted('0.2.0', committedMarker);
+    await assertCommitted('0.2.4', committedMarker);
     await assert.rejects(lstat(join(cacheRoot, '0.4.0')), { code: 'ENOENT' });
+
+    const networkRelease = makeRelease('0.5.0');
+    releaseFixtures = [networkRelease, legacySkill];
+    releasePages = [[networkRelease.release], [legacySkill.release]];
+    failedDownloadUrl = networkRelease.baseUrl + '/' + networkRelease.archiveName;
+    await assert.rejects(prepare(), /无法连接 GitHub Releases/);
+    failedDownloadUrl = null;
+    await assertCommitted('0.2.4', committedMarker);
+    await assert.rejects(lstat(join(cacheRoot, '0.5.0')), { code: 'ENOENT' });
+
+    const tooNewNodeRelease = makeRelease('0.5.8', 3, false, '99.0.0');
+    releaseFixtures = [tooNewNodeRelease, legacySkill];
+    releasePages = [[tooNewNodeRelease.release], [legacySkill.release]];
+    assert.equal((await prepare()).version, '0.2.4');
+    await assertCommitted('0.2.4', committedMarker);
+
+    const incompatibleProtocol = makeRelease('0.6.0', 4);
+    const incompatibleNode = makeRelease('0.5.9', 3, false, '99.0.0');
+    releaseFixtures = [incompatibleProtocol, incompatibleNode];
+    releasePages = [[incompatibleProtocol.release, incompatibleNode.release]];
+    await assert.rejects(prepare(), /没有与当前运行环境兼容/);
+    await assertCommitted('0.2.4', committedMarker);
+    await assert.rejects(lstat(join(cacheRoot, '0.6.0')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(cacheRoot, '0.5.9')), { code: 'ENOENT' });
     assert.equal((await readdir(cacheRoot)).some((name) => name.startsWith('.prepare-')), false);
 
     await assert.rejects(runtime.materializeRuntime({
@@ -196,7 +233,7 @@ test('Release preparation leaves legacy extension files untouched and commits on
     }, {
       writeMarker: async () => { throw new Error('synthetic marker write failure'); },
     }), /synthetic marker write failure/);
-    await assertCommitted('0.2.0', committedMarker);
+    await assertCommitted('0.2.4', committedMarker);
     assert.deepEqual(await readFile(oldManifest), oldManifestBytes);
   } finally {
     globalThis.fetch = originalFetch;
@@ -228,11 +265,11 @@ test('Windows release preparation protects the shared bridge storage root', {
     await assert.rejects(lstat(appSupportRoot), { code: 'ENOENT' });
 
     const activeRelease = makeRelease('0.6.0');
-    const releasesApi = 'https://api.github.com/repos/MC0571/weixin-channels-video/releases/latest';
+    const releasesApi = 'https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=1';
     globalThis.fetch = async (input) => {
       const url = String(input);
       if (url === releasesApi) {
-        return response(JSON.stringify(activeRelease.release), 'application/vnd.github+json');
+        return response(JSON.stringify([activeRelease.release]), 'application/vnd.github+json');
       }
       if (url === activeRelease.baseUrl + '/SHA256SUMS') {
         return response(activeRelease.checksums, 'text/plain');

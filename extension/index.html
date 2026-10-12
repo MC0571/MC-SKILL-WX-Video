@@ -12,6 +12,7 @@
       <header class="page-header">
         <div class="page-title-row">
           <h1>解析视频号分享链接</h1>
+          <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer">项目主页</a>
           <button
             id="ai-download-prompt-open"
             class="secondary-button ai-prompt-launch"
@@ -27,6 +28,14 @@
         </div>
         <p class="intro">粘贴公开分享链接，解析后预览并保存视频。</p>
       </header>
+
+      <section id="first-open-guide" class="inline-guide" aria-labelledby="first-open-guide-heading" hidden>
+        <div>
+          <h2 id="first-open-guide-heading">开始使用</h2>
+          <p>感谢使用。觉得工具有帮助？可以访问 <a id="guide-repository-link" target="_blank" rel="noreferrer">项目主页</a> 了解并支持项目。</p>
+        </div>
+        <button id="first-open-guide-dismiss" class="text-button" type="button" aria-label="关闭使用提示">知道了</button>
+      </section>
 
       <div
         id="ai-download-prompt-popover"
@@ -63,6 +72,7 @@
         </button>
       </div>
 
+      <div id="home-view">
       <section class="card input-card" aria-label="解析视频号分享链接">
         <form id="parse-form">
           <label class="visually-hidden" for="share-url">视频号分享链接</label>
@@ -85,6 +95,7 @@
         <p id="parse-status" class="status" role="status" aria-live="polite"></p>
         <div class="input-notes">
           <p id="login-status" class="status login-status" role="status" aria-live="polite" hidden></p>
+          <a id="yuanbao-login-link" class="login-link" href="https://yuanbao.tencent.com/" target="_blank" rel="noreferrer" hidden>打开元宝登录</a>
         </div>
       </section>
 
@@ -117,15 +128,42 @@
         </div>
       </section>
 
-      <section class="card download-card" aria-labelledby="download-heading">
-        <h2 id="download-heading">下载状态</h2>
-        <p id="download-status" class="status" role="status" aria-live="polite">下载进度会显示在这里。</p>
+      <section id="review-prompt" class="inline-review-prompt" aria-label="评价扩展" hidden>
+        <p>如果这个插件对您有帮助，请给个 5 星好评吧，爱你呦💗</p>
+        <div class="inline-actions">
+          <a id="review-link" class="text-button" target="_blank" rel="noreferrer">去评价</a>
+          <button id="review-dismiss" class="text-button" type="button">不再提醒</button>
+        </div>
       </section>
-      <p class="privacy-note">
-        点击解析后，链接会发送至腾讯元宝并向视频号获取视频信息；浏览器使用当前元宝登录态。
-        <a href="https://github.com/MC0571/weixin-channels-video/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">隐私政策</a>
-        <a id="yuanbao-login-link" class="login-link" href="https://yuanbao.tencent.com/" target="_blank" rel="noreferrer" hidden>打开元宝登录</a>
-      </p>
+
+      <section class="card recent-downloads" aria-labelledby="recent-download-heading">
+        <div class="section-heading-row">
+          <h2 id="recent-download-heading">最近下载</h2>
+          <button id="open-download-history" class="text-button" type="button">查看全部</button>
+        </div>
+        <div id="recent-download-list" class="download-history-list"></div>
+        <p id="recent-download-empty" class="status history-empty" role="status" aria-live="polite" hidden></p>
+        <p id="download-status" class="status recent-download-status" role="status" aria-live="polite">下载进度会显示在这里。</p>
+      </section>
+      </div>
+
+      <section id="history-view" class="history-view" aria-labelledby="history-heading" hidden>
+        <div class="section-heading-row">
+          <button id="history-back" class="text-button" type="button">返回解析</button>
+          <h2 id="history-heading" tabindex="-1">下载记录</h2>
+          <button id="history-order-toggle" class="text-button" type="button"></button>
+        </div>
+        <p id="history-status" class="status" role="status" aria-live="polite"></p>
+        <div id="download-history-list"></div>
+        <p id="download-history-empty" class="status history-empty" role="status" aria-live="polite" hidden></p>
+        <button id="history-load-more" class="secondary-button history-load-more" type="button" hidden>加载更多</button>
+      </section>
+
+      <footer class="page-footer">
+        <span>分享链接用于解析请求；反馈由你自愿填写并提交至飞书。</span>
+        <a id="privacy-link" target="_blank" rel="noreferrer">隐私政策</a>
+        <a id="feedback-link" target="_blank" rel="noreferrer">问题与建议</a>
+      </footer>
     </main>
   </body>
 </html>

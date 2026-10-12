@@ -7,6 +7,8 @@ import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { connect, createServer } from "node:net";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "esbuild";
 import test from "node:test";
 import { createAgentCommandHandler } from "../extension/agent.mjs";
 import { BRIDGE_ERROR_MESSAGES, BridgeFrameDecoder, encodeBridgeFrame, isAbsoluteDownloadPath, isSafeRelativeMp4Filename, NATIVE_HOST_NAME, validateBridgeCommand, validateBridgeResponse } from "../src/native-messaging.mjs";
@@ -102,7 +104,7 @@ function createAuthenticatedFakeServer({ sessionInfo = SESSION_INFO, hostSecret 
   });
 }
 
-async function createHostFixture(root, sessionId = SESSION_1) {
+async function createHostFixture(root, sessionId = SESSION_1, startHost = startNativeHost) {
   const appSupportDir = join(root, "app");
   await mkdir(appSupportDir, { mode: 0o700 });
   await chmod(appSupportDir, 0o700);
@@ -124,7 +126,7 @@ async function createHostFixture(root, sessionId = SESSION_1) {
   const input = new PassThrough();
   const output = new PassThrough();
   const outputFrames = collectFrames(output);
-  const host = await startNativeHost({
+  const host = await startHost({
     configPath,
     extensionOrigin: `chrome-extension://${EXTENSION_ID}/`,
     input,
@@ -181,6 +183,63 @@ test("extension status reports its installed manifest version", async () => {
     ok: true,
     result: { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1234, versions: { extension: "0.2.2" } },
   });
+});
+
+test("Skill CLI and host versions stay independent from the extension manifest over wire v2 and IPC2", {
+  timeout: 10_000,
+}, async () => {
+  const cliSource = fileURLToPath(new URL("../skills/weixin-channels-video/scripts/cli.mjs", import.meta.url));
+  const hostSource = fileURLToPath(new URL("../src/native-host.mjs", import.meta.url));
+
+  for (const [skillVersion, extensionVersion] of [["0.2.3", "0.2.2"], ["0.2.2", "0.2.3"]]) {
+    await withShortTempDir(async (root) => {
+      const cliPath = join(root, `cli-${skillVersion}.mjs`);
+      const hostPath = join(root, `host-${skillVersion}.mjs`);
+      const define = { __WCV_VERSION__: JSON.stringify(skillVersion) };
+      await build({ entryPoints: [cliSource], outfile: cliPath, bundle: true, platform: "node", format: "esm", target: "node22", define });
+      await build({ entryPoints: [hostSource], outfile: hostPath, bundle: true, platform: "node", format: "esm", target: "node22", define });
+      const [{ runCli: runSkillCli }, { startNativeHost: startSkillHost }] = await Promise.all([
+        import(pathToFileURL(cliPath).href),
+        import(pathToFileURL(hostPath).href),
+      ]);
+      const fixture = await createHostFixture(root, SESSION_1, startSkillHost);
+      try {
+        const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+        fixture.input.write(Buffer.from(encodeBridgeFrame({ type: "hello", version: 2, instanceId })));
+        assert.deepEqual(await fixture.outputFrames.next(), { type: "ready", version: 2, instanceId });
+
+        const extensionHandler = createAgentCommandHandler({
+          chromeApi: { runtime: { getManifest: () => ({ version: extensionVersion }) } },
+          statusProvider: async ({ refreshLogin }) => {
+            assert.equal(refreshLogin, true);
+            return { login: "authenticated", checkedAt: 55 };
+          },
+          instanceIdProvider: async () => instanceId,
+        });
+        const output = [];
+        const errors = [];
+        const statusPromise = runSkillCli(["status"], {
+          readInstallation: async () => fixture.config,
+          readSession: async () => fixture.sessionInfo,
+          readConnections: readBridgeConnections,
+          readSelection: async () => instanceId,
+          stdout: (value) => output.push(value),
+          stderr: (value) => errors.push(value),
+        });
+        const request = await fixture.outputFrames.next();
+        assert.equal(request.command, "status");
+        fixture.input.write(Buffer.from(encodeBridgeFrame(await extensionHandler(request))));
+
+        assert.equal(await statusPromise, 0, errors.join("\n"));
+        const status = JSON.parse(output[0]);
+        assert.equal(status.connection, "connected");
+        assert.equal(status.login, "authenticated");
+        assert.deepEqual(status.versions, { cli: skillVersion, host: skillVersion, extension: extensionVersion });
+      } finally {
+        await fixture.host.close();
+      }
+    });
+  }
 });
 
 test("Windows pipe transport close waits for PowerShell exit and settles startup", async () => {
@@ -938,7 +997,8 @@ test("agent returns only selected video fields and waits for Chrome's real downl
     url: "https://weixin.qq.com/sph/synthetic",
     filename: "Clips/clip.mp4",
   });
-  assert.deepEqual(downloaded, { video: parsed, api: chromeApi, filename: "Clips/clip.mp4" });
+  assert.deepEqual(downloaded, { video: parseResponse.result, api: chromeApi, filename: "Clips/clip.mp4" });
+  assert.equal(JSON.stringify(downloaded).includes("must-not-leak"), false);
   assert.equal(waitedId, 55);
   assert.deepEqual(downloadResponse, {
     id: REQUEST_ID,

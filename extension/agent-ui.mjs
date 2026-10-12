@@ -1,3 +1,5 @@
+import { initializeUpdateUi } from "./update-ui.mjs";
+
 import {
   CONNECTION_STORAGE_KEY,
   INSTANCE_STORAGE_KEY,
@@ -244,4 +246,5 @@ export function initializeAgentUI({
   initializeLoginStatus(chromeApi, windowApi, documentApi);
   initializeAgentIdentity(chromeApi, documentApi);
   initializePrompt(windowApi, documentApi);
+  initializeUpdateUi({ documentApi, chromeApi });
 }

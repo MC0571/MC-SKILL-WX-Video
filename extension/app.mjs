@@ -1,6 +1,8 @@
-import { API_URLS, ParseError, parseShareLink } from "../src/core.mjs";
-import { isSafeRelativeMp4Filename } from "../src/download-filename.mjs";
-import { AUTH_FAILURE_TYPE } from "./agent-state.mjs";
+import { API_URLS, ParseError } from "../src/core.mjs";
+import { isSafeRelativeMp4Filename, safeDownloadFilename } from "../src/download-filename.mjs";
+import { loadDownloadHistoryPage } from "./download-history.mjs";
+import { initializeEngagementUi } from "./engagement.mjs";
+import { initializeDownloadHistoryUi } from "./history-ui.mjs";
 
 const ENDPOINTS = new Map([
   [API_URLS.userInfo, { method: "GET", host: "yuanbao.tencent.com" }],
@@ -12,6 +14,7 @@ const YUANBAO_HOME_URL = `${YUANBAO_ORIGIN}/`;
 const API_REQUEST_TYPE = "weixin-channels-video:api-request";
 const API_RESPONSE_TYPE = "weixin-channels-video:api-response";
 const FEED_REQUEST_TYPE = "weixin-channels-video:feed-request";
+const PAGE_PARSE_TYPE = "weixin-channels-video:page-parse";
 export const PAGE_DOWNLOAD_TYPE = "weixin-channels-video:page-download";
 const IFRAME_TIMEOUT_MS = 15_000;
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -189,17 +192,8 @@ export function createExtensionRequest(
   };
 }
 
-export function safeFilename(title) {
-  const name = String(title || "weixin-video")
-    .normalize("NFKC")
-    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, "_")
-    .replace(/\.+/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    // 80 UTF-16 units cap this name at 240 UTF-8 bytes, plus the 4-byte ".mp4" suffix.
-    .slice(0, 80)
-    .trim();
-  return `${name || "weixin-video"}.mp4`;
+export function safeFilename(title, date = new Date()) {
+  return safeDownloadFilename(title, date);
 }
 
 export async function startDownload(result, chromeApi = globalThis.chrome, filename = safeFilename(result.title)) {
@@ -267,8 +261,8 @@ export async function waitForDownload(downloadId, chromeApi = globalThis.chrome,
 }
 
 export async function latestDownload(chromeApi = globalThis.chrome) {
-  const items = await chromeApi.downloads.search({ orderBy: ["-startTime"], limit: 50 });
-  return items.find((item) => item.byExtensionId === chromeApi.runtime.id) ?? null;
+  const { items } = await loadDownloadHistoryPage(chromeApi, { pageSize: 1, order: "desc" });
+  return items[0] ?? null;
 }
 
 export function downloadStatus(item) {
@@ -282,6 +276,8 @@ export function downloadStatus(item) {
 }
 
 function initializePage() {
+  initializeEngagementUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
+  initializeDownloadHistoryUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
   const form = document.querySelector("#parse-form");
   const input = document.querySelector("#share-url");
   const parseButton = document.querySelector("#parse-button");
@@ -465,7 +461,11 @@ function initializePage() {
     setParseStatus("正在检查登录状态并解析…");
 
     try {
-      const parsedResult = await parseShareLink(input.value, { request: createExtensionRequest() });
+      const response = await chrome.runtime.sendMessage({ type: PAGE_PARSE_TYPE, url: input.value });
+      if (!response?.ok || !response.result) {
+        throw new ParseError(response?.error?.code || "UPSTREAM_ERROR", response?.error?.message || "解析请求失败，请稍后重试。");
+      }
+      const parsedResult = response.result;
       if (generation !== parseGeneration) return;
       result = parsedResult;
       title.textContent = parsedResult.title || "未命名视频";
@@ -479,10 +479,6 @@ function initializePage() {
       downloadButton.disabled = false;
       setParseStatus("解析完成，可以预览或下载。");
     } catch (error) {
-      if (error?.code === "AUTH_EXPIRED" && globalThis.chrome?.runtime?.sendMessage) {
-        try { await chrome.runtime.sendMessage({ type: AUTH_FAILURE_TYPE }); }
-        catch { /* The page error remains visible if the background worker is unavailable. */ }
-      }
       if (generation === parseGeneration) {
         setParseStatus(error instanceof ParseError ? error.message : "解析请求失败，请稍后重试。", true);
       }

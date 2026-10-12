@@ -10,8 +10,6 @@ const body = workflow.match(/- name: Create or verify GitHub Release[\s\S]*?    
   .split('\n').map((line) => line.slice(10)).join('\n');
 const names = [
   'weixin-channels-video-extension-v0.2.1.zip',
-  'weixin-channels-video-skill-v0.2.1.tar.gz',
-  'weixin-channels-video-skill-v0.2.1.zip',
   'SHA256SUMS',
 ];
 
@@ -26,7 +24,7 @@ async function runStep(options = {}) {
       await writeFile(join(root, 'published', name), options.mismatch && name === names[0] ? 'different' : name);
     }
     await writeFile(join(root, 'step.sh'), body);
-    await writeFile(join(root, 'bin/git'), '#!/bin/sh\n[ "$1" = "ls-remote" ] || exit 9\n[ "$MOCK_MISSING_TAG" = "true" ] || printf "old-commit\\trefs/tags/v0.2.1\\n"\n');
+    await writeFile(join(root, 'bin/git'), '#!/bin/sh\n[ "$1" = "ls-remote" ] || exit 9\n[ "$MOCK_MISSING_TAG" = "true" ] || printf "old-commit\\trefs/tags/extension-v0.2.1\\n"\n');
     await writeFile(join(root, 'bin/gh'), `#!/usr/bin/env node
 import { appendFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';

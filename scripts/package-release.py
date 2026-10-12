@@ -16,32 +16,44 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist/release")
+    parser.add_argument("--component", choices=("both", "extension", "skill"), default="both")
     args = parser.parse_args()
 
-    manifest = json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))
-    version = manifest["version"]
-    extension_name = f"weixin-channels-video-extension-v{version}.zip"
-    skill_name = f"weixin-channels-video-skill-v{version}.tar.gz"
-    skill_zip_name = f"weixin-channels-video-skill-v{version}.zip"
+    extension_version = None
+    skill_version = None
+    if args.component in ("both", "extension"):
+        manifest = json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))
+        extension_version = manifest["version"]
+    if args.component in ("both", "skill"):
+        skill = json.loads((ROOT / "skills/weixin-channels-video/version.json").read_text(encoding="utf-8"))
+        skill_version = skill["version"]
+    extension_name = f"weixin-channels-video-extension-v{extension_version}.zip" if extension_version else None
+    skill_name = f"weixin-channels-video-skill-v{skill_version}.tar.gz" if skill_version else None
+    skill_zip_name = f"weixin-channels-video-skill-v{skill_version}.zip" if skill_version else None
     extension_dir = ROOT / "dist/extension"
     skill_dir = ROOT / "dist/weixin-channels-video"
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    extension_path = output_dir / extension_name
-    skill_path = output_dir / skill_name
-    skill_zip_path = output_dir / skill_zip_name
-    write_extension_zip(extension_dir, extension_path)
-    write_skill_archive(skill_dir, skill_path)
-    write_skill_zip(skill_dir, skill_zip_path)
+    extension_path = output_dir / extension_name if extension_name else None
+    skill_path = output_dir / skill_name if skill_name else None
+    skill_zip_path = output_dir / skill_zip_name if skill_zip_name else None
+    paths = []
+    if args.component in ("both", "extension"):
+        write_extension_zip(extension_dir, extension_path)
+        paths.append(extension_path)
+    if args.component in ("both", "skill"):
+        write_skill_archive(skill_dir, skill_path)
+        write_skill_zip(skill_dir, skill_zip_path)
+        paths.extend((skill_path, skill_zip_path))
 
     checksums = "".join(
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
-        for path in sorted((extension_path, skill_path, skill_zip_path), key=lambda item: item.name)
+        for path in sorted(paths, key=lambda item: item.name)
     )
     with (output_dir / "SHA256SUMS").open("w", encoding="ascii", newline="\n") as sums_file:
         sums_file.write(checksums)
-    print(f"Built {extension_name}, {skill_name}, {skill_zip_name}, and SHA256SUMS in {output_dir}.")
+    print(f"Built {', '.join(path.name for path in paths)} and SHA256SUMS in {output_dir}.")
 
 
 def write_extension_zip(extension_dir, archive_path):
