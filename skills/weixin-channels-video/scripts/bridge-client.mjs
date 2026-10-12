@@ -1,8 +1,9 @@
 import { connect as connectSocket } from "node:net";
+import { randomUUID } from "node:crypto";
 import { PARSE_ERROR_MESSAGES } from "../../../src/core.mjs";
 import { BRIDGE_ERROR_MESSAGES, BridgeFrameDecoder, encodeBridgeFrame, MAX_BRIDGE_MESSAGE_BYTES, validateBridgeCommand, validateBridgeResponse } from "../../../src/native-messaging.mjs";
 import { createIpcNonce, createIpcProof, IPC_AUTH_TIMEOUT_MS, isIpcSession, verifyIpcProof } from "../../../src/native-ipc.mjs";
-import { bridgeSocketPath, readBridgeSessionInfo } from "./bridge-install.mjs";
+import { bridgeSocketPath, readBridgeConnections, readBridgeSessionInfo } from "./bridge-install.mjs";
 
 export class BridgeError extends Error {
   constructor(code, message, details) {
@@ -148,6 +149,7 @@ function openBridgeSocket(socketPath, sessionInfo, request, timeoutMs, connectIm
 }
 
 export async function waitForBridge(config, sessionInfo, {
+  instanceId,
   timeoutMs = CONNECT_TIMEOUT_MS,
   connectImpl = connectSocket,
   now = Date.now,
@@ -158,7 +160,7 @@ export async function waitForBridge(config, sessionInfo, {
   while (now() < deadline) {
     try {
       await openBridgeSocket(
-        bridgeSocketPath(config, sessionInfo.sessionId),
+        bridgeSocketPath(config, sessionInfo.sessionId, instanceId),
         sessionInfo,
         null,
         Math.min(POLL_INTERVAL_MS * 2, deadline - now()),
@@ -176,11 +178,12 @@ export async function waitForBridge(config, sessionInfo, {
 export async function requestBridge(config, sessionInfo, request, {
   timeoutMs = 90_000,
   connectImpl = connectSocket,
+  instanceId,
 } = {}) {
   if (!isIpcSession(sessionInfo)) throw new BridgeError("BRIDGE_DISCONNECTED", BRIDGE_ERROR_MESSAGES.BRIDGE_DISCONNECTED);
   if (!validateBridgeCommand(request)) throw new BridgeError("INVALID_COMMAND", BRIDGE_ERROR_MESSAGES.INVALID_COMMAND);
   const response = await openBridgeSocket(
-    bridgeSocketPath(config, sessionInfo.sessionId),
+    bridgeSocketPath(config, sessionInfo.sessionId, instanceId),
     sessionInfo,
     request,
     timeoutMs,
@@ -191,6 +194,49 @@ export async function requestBridge(config, sessionInfo, request, {
     throw new BridgeError(code, PARSE_ERROR_MESSAGES[code] ?? BRIDGE_ERROR_MESSAGES[code] ?? "请求失败。", response.result);
   }
   return response.result;
+}
+
+export async function discoverBridgeConnections(config, sessionInfo, {
+  readConnections = readBridgeConnections,
+  request = requestBridge,
+  waitForLegacyBridge = waitForBridge,
+  refreshLogin = false,
+} = {}) {
+  const records = await readConnections(config, sessionInfo);
+  const active = [];
+  const currentRecords = records.filter((record) => record.nativeProtocol === 2);
+  const legacyRecords = records.filter((record) => record.nativeProtocol === 1);
+  for (const record of currentRecords) {
+    if (record.nativeProtocol !== 2) throw new BridgeError("BRIDGE_PROTOCOL_ERROR", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_ERROR);
+    let status;
+    try {
+      status = await request(config, sessionInfo, {
+        id: randomUUID(),
+        command: "status",
+        ...(refreshLogin ? { refreshLogin: true } : {}),
+      }, { timeoutMs: refreshLogin ? 30_000 : 1_000, instanceId: record.instanceId });
+    } catch (error) {
+      if (error instanceof BridgeError && ["BRIDGE_DISCONNECTED", "BRIDGE_TIMEOUT"].includes(error.code)) continue;
+      throw error;
+    }
+    if (!isRecord(status) || status.instanceId !== record.instanceId || status.nativeProtocol !== 2 ||
+        !["authenticated", "anonymous", "failed", "not_checked"].includes(status.login) ||
+        !(status.checkedAt === null || (Number.isFinite(status.checkedAt) && status.checkedAt >= 0)) ||
+        (status.error !== undefined && status.error !== "LOGIN_CHECK_FAILED") || !isRecord(status.versions)) {
+      throw new BridgeError("BRIDGE_PROTOCOL_ERROR", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_ERROR);
+    }
+    active.push({ instanceId: record.instanceId, login: status.login, checkedAt: status.checkedAt, ...(status.error ? { error: status.error } : {}), versions: status.versions });
+  }
+  if (active.length === 0 && legacyRecords.length > 0) {
+    try {
+      await waitForLegacyBridge(config, sessionInfo, { timeoutMs: 200 });
+      throw new BridgeError("BRIDGE_PROTOCOL_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_UNSUPPORTED);
+    } catch (error) {
+      if (error instanceof BridgeError && error.code === "BRIDGE_PROTOCOL_UNSUPPORTED") throw error;
+      if (!(error instanceof BridgeError) || !["BRIDGE_DISCONNECTED", "BRIDGE_TIMEOUT"].includes(error.code)) throw error;
+    }
+  }
+  return active;
 }
 
 export async function requestCurrentBridge(config, request, options) {

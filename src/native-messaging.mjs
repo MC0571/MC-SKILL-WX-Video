@@ -5,6 +5,7 @@ export { isSafeRelativeMp4Filename };
 export const NATIVE_HOST_NAME = "com.mc0571.weixin_channels_video";
 export const MAX_BRIDGE_MESSAGE_BYTES = 1024 * 1024;
 export const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const INSTANCE_ID_PATTERN = SESSION_ID_PATTERN;
 export const BRIDGE_ERROR_MESSAGES = Object.freeze({
   INVALID_COMMAND: "桥接命令无效。",
   BRIDGE_BUSY: "本地扩展正在处理另一个请求。",
@@ -13,9 +14,12 @@ export const BRIDGE_ERROR_MESSAGES = Object.freeze({
   BRIDGE_NOT_CONFIGURED: "请先运行 install-bridge 配置 Native Messaging。",
   BRIDGE_TIMEOUT: "本地扩展请求超时；Chrome 下载可能仍会继续。",
   BRIDGE_SESSION_MISMATCH: "Chrome 扩展会话不匹配。",
+  BRIDGE_PROFILE_AMBIGUOUS: "检测到多个已连接的 Chrome 用户。请运行 connect --instance <instanceId> 选择一个用户。",
+  BRIDGE_PROTOCOL_UNSUPPORTED: "扩展与本地程序协议不兼容。请更新 Chrome 扩展或 Skill。",
   BRIDGE_PROTOCOL_ERROR: "本地扩展返回了无效响应。",
   CHROME_NOT_INSTALLED: "未检测到 Google Chrome，请先安装后重试。",
   CHROME_VERSION_UNSUPPORTED: "Google Chrome 版本低于 116，请升级后重试。",
+  CHROME_STATUS_UNAVAILABLE: "无法确认 Google Chrome 是否正在运行，请检查本机进程检测权限后重试。",
   CHROME_PROFILE_UNAVAILABLE: "所选 Chrome profile 不存在或元数据不可用，请先选择已有 profile。",
   CHROME_START_FAILED: "无法启动 Google Chrome，请检查应用状态和系统权限。",
   CHROME_UNAVAILABLE: "当前平台不支持启动 Google Chrome。",
@@ -106,7 +110,8 @@ export function validateBridgeCommand(value) {
   const { id, command } = value;
   if (typeof id !== "string" || !SESSION_ID_PATTERN.test(id)) return false;
 
-  if (command === "status") return hasExactKeys(value, ["id", "command"]);
+  if (command === "status") return hasExactKeys(value, ["id", "command"]) ||
+    (hasExactKeys(value, ["id", "command", "refreshLogin"]) && typeof value.refreshLogin === "boolean");
   if (command === "parse") {
     return hasExactKeys(value, ["id", "command", "url"]) &&
       typeof value.url === "string" && value.url.length > 0;

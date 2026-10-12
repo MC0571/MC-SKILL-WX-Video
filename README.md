@@ -9,7 +9,7 @@
 | 方式 | 适合谁 | 需要准备什么 |
 | --- | --- | --- |
 | [Chrome 扩展](#chrome-扩展) | 自己粘贴链接、预览和下载 | Chrome 116+，同一浏览器用户中登录腾讯元宝 |
-| [AI Skill](#ai-skill) | 把分享链接交给 AI 下载 | macOS 或 Windows、本地 Node.js 22.22.2+、Chrome 116+ 及一次本地配对 |
+| [AI Skill](#ai-skill) | 把分享链接交给 AI 下载 | macOS 或 Windows、本地 Node.js 22.22.2+、Chrome 116+ 及本地桥接 |
 | [自部署 API](#自部署-api) | 接入自己的应用或工作流 | Docker 或 Cloudflare，部署者自己的元宝 Cookie |
 
 扩展与 Skill 使用浏览器中的元宝会话。Cookie 留在浏览器；扫码、验证码和登录由你完成。只下载你有权保存和使用的内容。
@@ -28,53 +28,43 @@
 
 视频保存位置遵循 Chrome 下载设置，重名时自动改名。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
 
-标题区的“Agent 设置”可打开完整安装提示词。提示词不包含扩展 ID；AI 会安装 Skill，并在配对时使用你当前选定扩展详情页显示的实际 ID。
+标题区的“Agent 设置”可打开完整安装提示词。提示词不包含扩展 ID；AI 会安装 Skill，并在注册桥接时使用你当前选定扩展的实际 ID。
 
 ![Agent 设置](docs/images/agent-settings.jpg)
 
 ## AI Skill
 
-本地 Codex CLI/桌面会话可用 Vercel `skills` CLI 安装。先确认 Agent 会话和 Chrome 位于同一台机器，按 [安装与本地运行指引](skills/weixin-channels-video/references/agent-installation.md) 检查 Node.js 22.22.2+，再显式指定目标 Agent：
+先按[安装与本地运行指引](skills/weixin-channels-video/references/agent-installation.md)确认 Agent 的运行环境与安装入口。Skill 用户需要 Node.js 22.22.2+、Chrome 116+，并能在目标 Chrome 所在机器运行本地命令。Codex 可通过 Vercel `skills` CLI 安装完整 Skill：
 
 ```sh
 npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-channels-video --agent codex
 ```
 
-该示例将 Skill 安装到 Codex 用户级目录；只有检查目标目录中没有同名 Skill 或本地修改后才运行。已有同名内容时先检查并使用宿主官方更新入口，不用自动确认覆盖。`skills` CLI 对 `codex`、`claude-code`、`trae` 和 `trae-cn` 提供明确目标；WorkBuddy、豆包工作和 QwenWork 使用各自官方的导入入口，不省略 Agent 目标让安装器自行选择。其他产品的目录、启用方式和命令权限见 [六个 Agent 的安装说明](skills/weixin-channels-video/references/agent-installation.md)。
+先检查目标目录没有同名 Skill 或本地修改；已有内容时使用宿主官方更新入口，不自动覆盖。其他 Agent 按 reference 中对应的官方导入方式安装完整文件夹与资源。
 
-也可以从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载完整 Skill 包，按目标 Agent 的官方方式导入，保留 `SKILL.md`、`scripts/`、`references/` 与包内资源。Codex 用户目录是 `~/.agents/skills/`；其他宿主不要套用该路径。已有同名目录时先检查，保留已有文件与自定义内容。
+也可以从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载完整 Skill 包，再按目标 Agent 的官方方式导入。Skill 包包含 `SKILL.md`、`scripts/`、`references/` 和运行资源，不包含 Chrome 扩展。
 
-安装后告诉 AI：
+安装后可直接把分享链接交给 AI：
 
 ```text
 帮我下载这个视频号视频：
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-首次使用，Skill 会准备带校验的运行资源并注册本地桥接。扩展与 Skill 分开安装和更新：扩展缺失时默认引导安装商店版；只有你明确选择非商店版时才使用独立 Release ZIP 或源码构建。已安装且连接有效的扩展直接复用。需要配对时，从选定扩展的详情页取得实际 ID 一次，用于桥接登记和实时握手；实时握手是连接状态依据。按名称选择 Chrome 用户时，profile metadata 查询可作辅助，不要求枚举整个 profile，也不反复验证扩展来源。
-
-需要自己操作时，在安装后的 Skill 目录执行以下命令。先按 reference 确认 OS、实际 Shell/执行环境、Node 与目标 Chrome 在同一台机器；Windows 原生与 WSL 的命令和 Node 路径不可混用：
+需要自己操作时，在安装后的 Skill 目录执行：
 
 ```sh
 node scripts/run.mjs prepare
 node scripts/run.mjs install-bridge --extension-id '替换为当前扩展ID'
-node scripts/run.mjs pairing-info
+node scripts/run.mjs connections
 node scripts/run.mjs connect
 node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
 ```
 
-从目标 Chrome 用户中选定扩展的详情页取得实际扩展 ID，再用于 `install-bridge`。提示词本身不提供固定或运行时扩展 ID。
+扩展与 Skill 独立安装和更新。扩展缺失时默认引导安装 Chrome Web Store 版本；只有你明确选择非商店版时，才使用独立 Release ZIP 或源码构建产物。安装 Skill 和桥接后，通过 `connect` 确认一次与扩展的真实往返即可完成准备；不要求先登录元宝、解析或下载。Chrome 扩展在后台自动发现桥接并恢复连接；不需要打开或保留扩展页面。
 
-需要指定 Chrome 用户时，在 `install-bridge` 命令后添加 `--profile '目录名或名称'`；不指定时使用手动配对流程。
-
-`prepare` 为从仓库安装的 Skill 获取最新正式 Release，验证 SHA256 和资源包运行协议；普通命令复用本地资源，首次没有资源时自动准备。独立 Skill Release 包自带所需运行资源，可离线准备。运行资源协议为 3，与 Chrome Native Messaging 协议 1 和本地 IPC 协议 2 分开版本管理。首次从源码 Skill 下载资源需要发布了兼容协议资源的正式 Release 和网络连接。
-
-升级 Skill 后先执行 `prepare`，再检查 `status`。首次使用或需要重新配对时运行 `pairing-info`，将 `sessionId` 填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。`connect`、`diagnose` 与 `status` 用于连接及登录状态核实；连接失败时按 `diagnose` 返回的 `nextAction` 处理。profile 可选；不指定时不会枚举 Chrome 用户数据。
-
-下载默认以视频标题命名。`--filename '视频.mp4'` 可指定 Chrome 下载目录内的相对文件名。AI 会在 Chrome 确认完成后展示视频、各版本链接和最终路径。任务超时或断连后不会自动重发，避免重复下载。
-
-扩展“Agent 设置”面板显示实际扩展版本、本地程序的连接阶段和恢复建议。若尚未配对，运行 `pairing-info`，将输出的配对标识填入日常 Chrome 扩展的 Agent 设置；保存后自动重连。配对标识不是 IPC 密钥，常规日志不输出它。商店审核与上线可能有延迟；若商店界面没有 Skill 所需功能，可等待商店更新，或明确选择独立 Release 版本。GitHub 发布或送审不代表商店已更新。登录失效时在同一 Chrome 用户重新登录；网络检查失败不代表未登录。更多恢复步骤见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+`connections` 只列出已认证且实际响应 status 的在线扩展实例，不等待元宝网络。唯一候选可用于本次任务；有多个时通过 `connect --instance <UUID>` 明确选择并持久绑定。绑定的实例离线时不会自动切换到另一个 Chrome 用户。登录状态以扩展维护的五分钟 snapshot 为准：明确匿名时停止任务并请用户登录，检查失败或状态未知不会误报成未登录，也不作为连接失败。下载按标题命名，重名自动改名；命令等待 Chrome 确认完成后才报告成功。任务提交后断连或超时不会自动重发。完整连接、登录与下载规则见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
 
 ## 自部署 API
 

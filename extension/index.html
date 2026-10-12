@@ -53,21 +53,13 @@
         </p>
         <p id="bridge-connection-status" class="status bridge-connection-status" role="status" aria-live="polite" hidden></p>
         <p class="extension-version">扩展版本：<span id="extension-version">unknown</span></p>
-        <p class="extension-version">CLI / host 版本：unknown。请让 AI 运行 <code>status</code> 查看实际版本。</p>
-        <p class="extension-version">本版支持协议：Native Messaging v1 / IPC v2。</p>
-        <p id="pairing-storage-status" class="status pairing-storage-status" role="status" aria-live="polite">配对信息存储状态：检查中。</p>
-        <form id="manual-pairing-form" class="manual-pairing-form" novalidate>
-          <label for="pairing-session-id">配对码</label>
-          <input id="pairing-session-id" name="sessionId" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="pairing-session-id-help" required>
-          <p id="pairing-session-id-help" class="pairing-help">请让 AI 运行 <code>pairing-info</code>，再将输出中的配对码粘贴到这里。</p>
-          <button class="primary-button" type="submit">连接本机程序</button>
-          <p id="manual-pairing-status" class="status" role="status" aria-live="polite"></p>
-        </form>
+        <p class="extension-version">当前浏览器连接标识：<span id="agent-instance-id">检查中</span>（用于区分多个 Chrome 用户，不是配对码）</p>
         <textarea id="ai-download-prompt-text" rows="12" readonly aria-label="提示词全文"></textarea>
         <p id="ai-prompt-copy-status" class="status ai-prompt-copy-status" role="status" aria-live="polite"></p>
         <button id="ai-download-prompt-copy" class="ai-prompt-copy" type="button">
-          <img src="./icons/copy.svg" alt="" aria-hidden="true">
-          <span>复制提示词</span>
+          <img id="ai-download-prompt-copy-icon" src="./icons/copy.svg" alt="" aria-hidden="true">
+          <span id="ai-download-prompt-copy-success" class="copy-success-icon" aria-hidden="true" hidden>✓</span>
+          <span id="ai-download-prompt-copy-label">复制提示词</span>
         </button>
       </div>
 
@@ -92,14 +84,7 @@
         </form>
         <p id="parse-status" class="status" role="status" aria-live="polite"></p>
         <div class="input-notes">
-          <p class="privacy-note">
-            点击解析后，链接会发送至腾讯元宝并向视频号获取视频信息；浏览器使用当前元宝登录态。
-            <a href="https://github.com/MC0571/weixin-channels-video/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">隐私政策</a>
-          </p>
-          <p class="login-note">
-            需要在此 Chrome profile 中登录腾讯元宝，登录信息保留在浏览器内。
-            <a href="https://yuanbao.tencent.com/" target="_blank" rel="noreferrer">打开元宝登录</a>
-          </p>
+          <p id="login-status" class="status login-status" role="status" aria-live="polite" hidden></p>
         </div>
       </section>
 
@@ -136,6 +121,11 @@
         <h2 id="download-heading">下载状态</h2>
         <p id="download-status" class="status" role="status" aria-live="polite">下载进度会显示在这里。</p>
       </section>
+      <p class="privacy-note">
+        点击解析后，链接会发送至腾讯元宝并向视频号获取视频信息；浏览器使用当前元宝登录态。
+        <a href="https://github.com/MC0571/weixin-channels-video/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">隐私政策</a>
+        <a id="yuanbao-login-link" class="login-link" href="https://yuanbao.tencent.com/" target="_blank" rel="noreferrer" hidden>打开元宝登录</a>
+      </p>
     </main>
   </body>
 </html>

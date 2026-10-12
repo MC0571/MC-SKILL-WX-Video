@@ -1,5 +1,6 @@
 import { API_URLS, ParseError, parseShareLink } from "../src/core.mjs";
 import { isSafeRelativeMp4Filename } from "../src/download-filename.mjs";
+import { AUTH_FAILURE_TYPE } from "./agent-state.mjs";
 
 const ENDPOINTS = new Map([
   [API_URLS.userInfo, { method: "GET", host: "yuanbao.tencent.com" }],
@@ -478,6 +479,10 @@ function initializePage() {
       downloadButton.disabled = false;
       setParseStatus("解析完成，可以预览或下载。");
     } catch (error) {
+      if (error?.code === "AUTH_EXPIRED" && globalThis.chrome?.runtime?.sendMessage) {
+        try { await chrome.runtime.sendMessage({ type: AUTH_FAILURE_TYPE }); }
+        catch { /* The page error remains visible if the background worker is unavailable. */ }
+      }
       if (generation === parseGeneration) {
         setParseStatus(error instanceof ParseError ? error.message : "解析请求失败，请稍后重试。", true);
       }

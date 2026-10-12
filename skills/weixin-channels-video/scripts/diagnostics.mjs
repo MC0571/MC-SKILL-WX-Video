@@ -166,7 +166,7 @@ function launchDetached(executable, args) {
   });
 }
 
-export async function launchChrome(config, sessionId, {
+export async function launchChrome(config, _sessionId, {
   platform = process.platform,
   inspectChrome = () => inspectChromeInstallation({ platform }),
   inspectProfileDirectory = lstat,
@@ -185,26 +185,33 @@ export async function launchChrome(config, sessionId, {
   if (chrome.compatibility === "too_old") {
     throw new BridgeError("CHROME_VERSION_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.CHROME_VERSION_UNSUPPORTED);
   }
-  const profileDirectory = config?.profileDirectory;
-  const userDataDir = config?.chromeUserDataDir;
-  if (typeof userDataDir !== "string" || !userDataDir ||
-      !(platform === "win32" ? win32.isAbsolute(userDataDir) : isAbsolute(userDataDir)) ||
-      typeof profileDirectory !== "string" || !profileDirectory ||
-      profileDirectory === "." || profileDirectory === ".." || isAbsolute(profileDirectory) ||
-      profileDirectory.includes("/") || profileDirectory.includes("\\")) {
-    throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+  const args = [];
+  if (config?.chromeUserDataDir) {
+    if (!(platform === "win32" ? win32.isAbsolute(config.chromeUserDataDir) : isAbsolute(config.chromeUserDataDir))) {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    args.push(`--user-data-dir=${config.chromeUserDataDir}`);
   }
-  try {
-    const profile = await inspectProfileDirectory(join(userDataDir, profileDirectory));
-    if (!profile.isDirectory() || profile.isSymbolicLink()) throw new Error();
-  } catch {
-    throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+  if (config?.profileDirectory !== undefined) {
+    const profileDirectory = config.profileDirectory;
+    if (typeof profileDirectory !== "string" || !profileDirectory || profileDirectory === "." || profileDirectory === ".." ||
+        isAbsolute(profileDirectory) || profileDirectory.includes("/") || profileDirectory.includes("\\")) {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    try {
+      const profile = await inspectProfileDirectory(join(config.chromeUserDataDir, profileDirectory));
+      if (!profile.isDirectory() || profile.isSymbolicLink()) throw new Error();
+    } catch {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    args.push(`--profile-directory=${profileDirectory}`);
   }
-  const args = platform === "win32"
-    ? [`--user-data-dir=${config.chromeUserDataDir}`, `--profile-directory=${config.profileDirectory}`]
-    : [`--user-data-dir=${config.chromeUserDataDir}`, `--profile-directory=${config.profileDirectory}`];
-  if (sessionId) args.push(`chrome-extension://${config.extensionId}/index.html#agent-connect=${sessionId}`);
-  const result = await processLauncher(chrome.executable, args);
+  if (platform === "win32") args.push("--no-startup-window");
+  const executable = platform === "darwin" ? "/usr/bin/open" : chrome.executable;
+  const launchArgs = platform === "darwin"
+    ? ["-g", "-a", chrome.appPath, ...(args.length ? ["--args", ...args] : [])]
+    : args;
+  const result = await processLauncher(executable, launchArgs);
   if (result.status !== 0 || result.error) {
     throw new BridgeError("CHROME_START_FAILED", BRIDGE_ERROR_MESSAGES.CHROME_START_FAILED);
   }

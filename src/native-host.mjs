@@ -1,10 +1,12 @@
-import { chmod, lstat, readFile, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createServer, connect as connectSocket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   createIpcNonce,
+  bridgeInstanceKey,
   createIpcProof,
   createWindowsPipeServer,
   isIpcNonce,
@@ -17,12 +19,13 @@ import {
   BRIDGE_ERROR_MESSAGES,
   encodeBridgeFrame,
   MAX_BRIDGE_MESSAGE_BYTES,
+  INSTANCE_ID_PATTERN,
   NATIVE_HOST_NAME,
   SESSION_ID_PATTERN,
   validateBridgeCommand,
   validateBridgeResponse,
 } from "./native-messaging.mjs";
-import { assertWindowsPrivatePath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
+import { assertWindowsPrivatePath, secureWindowsPath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
 const failure = (id, code, message) => ({ id, ok: false, error: { code, message } });
 const HOST_VERSION = typeof __WCV_VERSION__ === "string" ? __WCV_VERSION__ : "unknown";
@@ -39,6 +42,58 @@ function hasExactKeys(value, keys) {
 function isSessionHello(value, expectedSessionId) {
   return hasExactKeys(value, ["type", "version", "sessionId"]) &&
     value.type === "hello" && value.version === 1 && value.sessionId === expectedSessionId;
+}
+
+function isInstanceHello(value) {
+  return hasExactKeys(value, ["type", "version", "instanceId"]) &&
+    value.type === "hello" && value.version === 2 && INSTANCE_ID_PATTERN.test(value.instanceId);
+}
+
+function instanceSocketPath(appSupportDir, sessionId, instanceId, platform) {
+  const key = bridgeInstanceKey(sessionId, instanceId);
+  return platform === "win32"
+    ? `\\\\.\\pipe\\${windowsPipeName(appSupportDir, sessionId, instanceId)}`
+    : join(appSupportDir, `i-${key.slice(0, 16)}.sock`);
+}
+
+async function writeConnectionRecord(root, sessionId, instanceId, generation, platform, env, securitySpawnSyncImpl, nativeProtocol = 2) {
+  const directory = join(root, "connections");
+  let info;
+  try { info = await lstat(directory); }
+  catch (error) { if (error.code !== "ENOENT") throw new Error("BRIDGE_START_FAILED"); }
+  if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("BRIDGE_START_FAILED");
+  if (!info) await mkdir(directory, { mode: 0o700 });
+  if (platform === "win32") await secureWindowsPath(directory, {
+    platform, env, spawnSyncImpl: securitySpawnSyncImpl, directory: true, newlyCreated: !info,
+  });
+  else await chmod(directory, 0o700);
+  const recordPath = join(directory, `${instanceId}.json`);
+  try {
+    const existing = await lstat(recordPath);
+    if (!existing.isFile() || existing.isSymbolicLink()) throw new Error("BRIDGE_START_FAILED");
+    if (platform === "win32") await assertWindowsPrivatePath(recordPath, { platform, env, spawnSyncImpl: securitySpawnSyncImpl });
+  } catch (error) { if (error.code !== "ENOENT") throw new Error("BRIDGE_START_FAILED"); }
+  const tempPath = `${recordPath}.${generation}.tmp`;
+  const record = { version: 1, sessionId, instanceId, generation, nativeProtocol };
+  try {
+    await writeFile(tempPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    if (platform === "win32") await secureWindowsPath(tempPath, { platform, env, spawnSyncImpl: securitySpawnSyncImpl, newlyCreated: true });
+    else await chmod(tempPath, 0o600);
+    await rename(tempPath, recordPath);
+    if (platform === "win32") await secureWindowsPath(recordPath, { platform, env, spawnSyncImpl: securitySpawnSyncImpl });
+    else await chmod(recordPath, 0o600);
+  } finally { await rm(tempPath, { force: true }); }
+  return { path: recordPath, record };
+}
+
+async function removeConnectionRecord(recordInfo) {
+  if (!recordInfo) return;
+  try {
+    const value = JSON.parse(await readFile(recordInfo.path, "utf8"));
+    if (value?.generation === recordInfo.record.generation && value?.sessionId === recordInfo.record.sessionId) {
+      await unlink(recordInfo.path);
+    }
+  } catch { /* A stale or unreadable record is left for authenticated discovery to ignore. */ }
 }
 
 function writeFrame(stream, value) {
@@ -166,9 +221,12 @@ export async function startNativeHost({
   }
 
   const sessionId = session.sessionId;
-  const socketPath = platform === "win32"
+  let socketPath = platform === "win32"
     ? `\\\\.\\pipe\\${windowsPipeName(appSupportDir, sessionId)}`
     : join(appSupportDir, `s-${sessionId.replaceAll("-", "").slice(0, 16)}.sock`);
+  let instanceId;
+  let wireVersion;
+  let connectionRecord;
   const nativeDecoder = new BridgeFrameDecoder();
   let server;
   let serverPromise;
@@ -200,8 +258,9 @@ export async function startNativeHost({
     const startedServer = server ?? await serverPromise?.catch(() => undefined);
     if (startedServer) {
       await new Promise((resolve) => startedServer.close(() => resolve()));
-      await unlink(socketPath).catch(() => {});
+      if (platform !== "win32") await unlink(socketPath).catch(() => {});
     }
+    await removeConnectionRecord(connectionRecord);
     input.removeListener("data", onInput);
     input.removeListener("end", close);
     input.removeListener("error", close);
@@ -269,7 +328,11 @@ export async function startNativeHost({
 
   const startServer = async () => {
     if (platform === "win32") {
-      windowsTransport = createWindowsPipeServer(windowsPipeName(appSupportDir, sessionId), {
+      const pipeName = instanceId
+        ? windowsPipeName(appSupportDir, sessionId, instanceId)
+        : windowsPipeName(appSupportDir, sessionId);
+      socketPath = `\\\\.\\pipe\\${pipeName}`;
+      windowsTransport = createWindowsPipeServer(pipeName, {
         platform,
         env,
         spawnImpl: powershellSpawnImpl,
@@ -361,10 +424,26 @@ export async function startNativeHost({
     catch { void close(); return; }
     for (const message of messages) {
       if (!initialized) {
-        if (!isSessionHello(message, sessionId)) { void close(); return; }
+        if (isInstanceHello(message)) {
+          wireVersion = 2;
+          instanceId = message.instanceId;
+          socketPath = instanceSocketPath(appSupportDir, sessionId, instanceId, platform);
+        } else if (isSessionHello(message, sessionId)) {
+          wireVersion = 1;
+          instanceId = "00000000-0000-4000-8000-000000000000";
+          socketPath = platform === "win32"
+            ? `\\\\.\\pipe\\${windowsPipeName(appSupportDir, sessionId)}`
+            : join(appSupportDir, `s-${sessionId.replaceAll("-", "").slice(0, 16)}.sock`);
+        } else { void close(); return; }
         initialized = true;
-        serverPromise = startServer().then((started) => {
+        serverPromise = startServer().then(async (started) => {
           if (closed) return started;
+          if (wireVersion === 2) {
+            connectionRecord = await writeConnectionRecord(appSupportDir, sessionId, instanceId, randomUUID(), platform, env, securitySpawnSyncImpl, 2);
+            writeFrame(output, { type: "ready", version: 2, instanceId });
+            return started;
+          }
+          connectionRecord = await writeConnectionRecord(appSupportDir, sessionId, instanceId, randomUUID(), platform, env, securitySpawnSyncImpl, 1);
           writeFrame(output, { type: "ready", version: 1 });
           return started;
         }).catch(() => {
@@ -376,6 +455,11 @@ export async function startNativeHost({
       if (nativeRequest && validateBridgeResponse(message, nativeRequest.id)) {
         const request = nativeRequest;
         nativeRequest = undefined;
+        if (wireVersion === 2 && request.command === "status" && message.ok &&
+            (message.result?.instanceId !== instanceId || message.result?.nativeProtocol !== 2)) {
+          finishClient(request.client);
+          return;
+        }
         if (request.command === "status" && message.ok && isRecord(message.result)) {
           message.result.versions = { ...message.result.versions, host: HOST_VERSION };
         }

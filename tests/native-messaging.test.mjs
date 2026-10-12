@@ -12,8 +12,8 @@ import { createAgentCommandHandler } from "../extension/agent.mjs";
 import { BRIDGE_ERROR_MESSAGES, BridgeFrameDecoder, encodeBridgeFrame, isAbsoluteDownloadPath, isSafeRelativeMp4Filename, NATIVE_HOST_NAME, validateBridgeCommand, validateBridgeResponse } from "../src/native-messaging.mjs";
 import { createIpcNonce, createIpcProof, createWindowsPipeServer, isIpcSession, verifyIpcProof, windowsPipeName } from "../src/native-ipc.mjs";
 import { startNativeHost } from "../src/native-host.mjs";
-import { BridgeSetupError, bridgeSocketPath, installBridge, inspectBridgeComponents, readBridgeInstallation, readBridgeSession } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
-import { BridgeError, requestBridge, waitForBridge } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
+import { BridgeSetupError, bridgeSocketPath, installBridge, inspectBridgeComponents, readBridgeConnections, readBridgeInstallation, readBridgeSelection, readBridgeSession } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
+import { BridgeError, discoverBridgeConnections, requestBridge, waitForBridge } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
 import { runCli } from "../skills/weixin-channels-video/scripts/cli.mjs";
 import { secureWindowsPath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
@@ -166,14 +166,19 @@ test("IPC2 sessions use private keys, fresh nonces, and endpoint-specific pipe n
 });
 
 test("extension status reports its installed manifest version", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
   const handler = createAgentCommandHandler({
     chromeApi: { runtime: { getManifest: () => ({ version: "0.2.2" }) } },
-    loginChecker: async () => ({ status: "authenticated" }),
+    statusProvider: async ({ refreshLogin }) => {
+      assert.equal(refreshLogin, true);
+      return { login: "authenticated", checkedAt: 1234 };
+    },
+    instanceIdProvider: async () => instanceId,
   });
-  assert.deepEqual(await handler({ id: REQUEST_ID, command: "status" }), {
+  assert.deepEqual(await handler({ id: REQUEST_ID, command: "status", refreshLogin: true }), {
     id: REQUEST_ID,
     ok: true,
-    result: { login: "authenticated", versions: { extension: "0.2.2" } },
+    result: { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1234, versions: { extension: "0.2.2" } },
   });
 });
 
@@ -399,6 +404,46 @@ test("installer supports manual pairing without profile metadata and preserves i
   });
 });
 
+test("omitting profile on a same-install upgrade preserves profile and IPC secret; explicit profile change rotates them", async () => {
+  await withShortTempDir(async (root) => {
+    const chromeRoot = await chromeProfileFixture(root, [["Profile 3", "Research"], ["Default", "Personal"]]);
+    const appSupportDir = join(root, "private", "bridge");
+    const nativeHostSource = join(root, "native-host-bundle.mjs");
+    await writeFile(nativeHostSource, "// synthetic host bundle\n");
+    const options = {
+      extensionId: EXTENSION_ID,
+      appSupportDir,
+      chromeUserDataDir: chromeRoot,
+      registryDir: join(chromeRoot, "NativeMessagingHosts"),
+      nodeExecutable: "/Applications/Node Runtime/bin/node",
+      nativeHostSource,
+      platform: "darwin",
+    };
+
+    const installed = await installBridge({ ...options, profile: "Research" });
+    const sessionPath = join(appSupportDir, "session.json");
+    const originalSession = JSON.parse(await readFile(sessionPath, "utf8"));
+    assert.equal(installed.config.profileDirectory, "Profile 3");
+    assert.equal(installed.config.profileName, "Research");
+
+    await rm(join(chromeRoot, "Local State"));
+    const upgraded = await installBridge(options);
+    const upgradedSession = JSON.parse(await readFile(sessionPath, "utf8"));
+    assert.equal(upgraded.config.profileDirectory, "Profile 3");
+    assert.equal(upgraded.config.profileName, "Research");
+    assert.deepEqual(upgradedSession, originalSession);
+
+    await writeFile(join(chromeRoot, "Local State"), JSON.stringify({
+      profile: { info_cache: { "Profile 3": { name: "Research" }, Default: { name: "Personal" } } },
+    }));
+    const switched = await installBridge({ ...options, profile: "Personal" });
+    const switchedSession = JSON.parse(await readFile(sessionPath, "utf8"));
+    assert.equal(switched.config.profileDirectory, "Default");
+    assert.notEqual(switchedSession.sessionId, originalSession.sessionId);
+    assert.notEqual(switchedSession.ipcSecret, originalSession.ipcSecret);
+  });
+});
+
 test("installer reports Chrome registration access failures as a distinct setup stage", async () => {
   await withShortTempDir(async (root) => {
     const chromeRoot = join(root, "Chrome User Data");
@@ -507,6 +552,8 @@ test("Native Messaging host authenticates the local client, forwards one command
     const fixture = await createHostFixture(root);
     fixture.input.write(Buffer.from(encodeBridgeFrame({ type: "hello", version: 1, sessionId: SESSION_1 })));
     assert.deepEqual(await fixture.outputFrames.next(), { type: "ready", version: 1 });
+    const legacyRecords = await readBridgeConnections(fixture.config, fixture.sessionInfo);
+    assert.equal(legacyRecords[0].nativeProtocol, 1);
 
     const command = { id: REQUEST_ID, command: "parse", url: "https://weixin.qq.com/sph/synthetic" };
     const responsePromise = requestBridge(fixture.config, fixture.sessionInfo, command);
@@ -516,6 +563,126 @@ test("Native Messaging host authenticates the local client, forwards one command
     assert.deepEqual(await responsePromise, response.result);
     await fixture.host.close();
     await assert.rejects(stat(fixture.host.socketPath), { code: "ENOENT" });
+  });
+});
+
+test("connection discovery skips stale sockets, rejects malformed status, and identifies legacy protocol immediately", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const records = [{ instanceId, nativeProtocol: 2 }];
+  const skipped = await discoverBridgeConnections({}, SESSION_INFO, {
+    readConnections: async () => records,
+    request: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "stale"); },
+    waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_TIMEOUT", "stale legacy"); },
+  });
+  assert.deepEqual(skipped, []);
+
+  await assert.rejects(discoverBridgeConnections({}, SESSION_INFO, {
+    readConnections: async () => records,
+    request: async () => ({ instanceId, nativeProtocol: 2, login: "bad", checkedAt: null, versions: {} }),
+  }), { code: "BRIDGE_PROTOCOL_ERROR" });
+  await assert.rejects(discoverBridgeConnections({}, SESSION_INFO, {
+    readConnections: async () => [{ instanceId, nativeProtocol: 1 }],
+    request: async () => { throw new Error("legacy health check must not be requested"); },
+    waitForLegacyBridge: async () => {},
+  }), { code: "BRIDGE_PROTOCOL_UNSUPPORTED" });
+  await assert.rejects(discoverBridgeConnections({}, SESSION_INFO, {
+    readConnections: async () => records,
+    request: async () => { throw new BridgeError("BRIDGE_SESSION_MISMATCH", "wrong session"); },
+  }), { code: "BRIDGE_SESSION_MISMATCH" });
+
+  let legacyProbeCount = 0;
+  const liveV2 = await discoverBridgeConnections({}, SESSION_INFO, {
+    readConnections: async () => [{ instanceId, nativeProtocol: 1 }, ...records],
+    request: async () => ({ instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 50, versions: {} }),
+    waitForLegacyBridge: async () => { legacyProbeCount += 1; },
+  });
+  assert.equal(liveV2.length, 1);
+  assert.equal(legacyProbeCount, 0, "a stale legacy hint cannot block a live v2 instance");
+});
+
+test("connection and selection readers reject unsafe filesystem object types", async () => {
+  await withShortTempDir(async (root) => {
+    const external = join(root, "external");
+    const appSupportDir = join(root, "support");
+    await mkdir(external, { recursive: true });
+    await mkdir(appSupportDir, { recursive: true });
+    await symlink(external, join(appSupportDir, "connections"));
+    const config = { appSupportDir };
+    await assert.rejects(readBridgeConnections(config, SESSION_INFO), { code: "BRIDGE_CONFIG_INVALID" });
+
+    await rm(join(appSupportDir, "connections"), { force: true });
+    const selected = join(external, "selection.json");
+    await writeFile(selected, JSON.stringify({ version: 1, sessionId: SESSION_1, instanceId: "423e4567-e89b-42d3-a456-426614174000" }));
+    await symlink(selected, join(appSupportDir, "selection.json"));
+    await assert.rejects(readBridgeSelection(config, SESSION_INFO), { code: "BRIDGE_CONFIG_INVALID" });
+  });
+});
+
+test("CLI resolves ambiguity before login refresh and refreshes only the selected instance", async () => {
+  const first = "423e4567-e89b-42d3-a456-426614174000";
+  const second = "523e4567-e89b-42d3-a456-426614174000";
+  const records = [{ instanceId: first, nativeProtocol: 2 }, { instanceId: second, nativeProtocol: 2 }];
+  const errors = [];
+  const outputs = [];
+  const ambiguousCalls = [];
+  const common = {
+    readInstallation: async () => ({ appSupportDir: "/tmp/bridge" }),
+    readSession: async () => SESSION_INFO,
+    readConnections: async () => records,
+    readSelection: async () => null,
+    bridgeRequest: async (_config, _session, request, options) => {
+      ambiguousCalls.push({ request, options });
+      return { instanceId: options.instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
+    },
+  };
+  assert.equal(await runCli(["status"], { ...common, stdout: (value) => outputs.push(value), stderr: (value) => errors.push(value) }), 1);
+  assert.equal(ambiguousCalls.length, 2);
+  assert.equal(ambiguousCalls.some(({ request }) => request.refreshLogin), false);
+  assert.equal(JSON.parse(outputs[0]).connection, "disconnected");
+
+  const refreshCalls = [];
+  const selected = await runCli(["parse", "--url", "https://weixin.qq.com/sph/synthetic"], {
+    ...common,
+    readSelection: async () => second,
+    bridgeRequest: async (_config, _session, request, options) => {
+      refreshCalls.push({ request, options });
+      if (request.command === "status") return { instanceId: second, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
+      return { title: "synthetic" };
+    },
+    stdout() {},
+    stderr: (value) => errors.push(value),
+  });
+  assert.equal(selected, 0);
+  assert.equal(refreshCalls.length, 2);
+  assert.deepEqual(refreshCalls.map(({ options }) => options.instanceId), [second, second]);
+  assert.equal(refreshCalls[0].request.refreshLogin, true);
+});
+
+test("wire v2 binds an authenticated status to a private per-instance discovery record", async () => {
+  await withShortTempDir(async (root) => {
+    const fixture = await createHostFixture(root);
+    const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+    fixture.input.write(Buffer.from(encodeBridgeFrame({ type: "hello", version: 2, instanceId })));
+    assert.deepEqual(await fixture.outputFrames.next(), { type: "ready", version: 2, instanceId });
+    const recordPath = join(fixture.appSupportDir, "connections", `${instanceId}.json`);
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    assert.deepEqual(Object.keys(record).sort(), ["generation", "instanceId", "nativeProtocol", "sessionId", "version"]);
+    assert.equal(record.sessionId, SESSION_1);
+    assert.equal(record.nativeProtocol, 2);
+    assert.equal((await stat(recordPath)).mode & 0o777, 0o600);
+
+    const request = { id: REQUEST_ID, command: "status" };
+    const resultPromise = requestBridge(fixture.config, fixture.sessionInfo, request, { instanceId });
+    assert.deepEqual(await fixture.outputFrames.next(), request);
+    fixture.input.write(Buffer.from(encodeBridgeFrame({ id: REQUEST_ID, ok: true, result: {
+      instanceId, nativeProtocol: 2, login: "anonymous", checkedAt: null, versions: { extension: "0.2.3" },
+    } })));
+    const result = await resultPromise;
+    assert.equal(result.instanceId, instanceId);
+    assert.equal(result.nativeProtocol, 2);
+    assert.equal(result.versions.host, "unknown");
+    await fixture.host.close();
+    await assert.rejects(readFile(recordPath), { code: "ENOENT" });
   });
 });
 
@@ -543,80 +710,59 @@ test("status adds the host version while accepting an older extension status res
   });
 });
 
-test("CLI connection sessions stay private and status distinguishes disconnected from login failure", async () => {
+test("CLI discovers authenticated instances and persists only an explicit selection", async () => {
   const config = { extensionId: EXTENSION_ID, profileDirectory: "Profile 3", chromeUserDataDir: "/tmp/chrome", appSupportDir: "/tmp/bridge" };
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const record = { version: 1, sessionId: SESSION_1, instanceId, generation: REQUEST_ID, nativeProtocol: 2 };
   const outputs = [];
   const errors = [];
-  let launched;
-  let waited;
-  const launches = [];
-  const waitTimeouts = [];
-  assert.equal(await runCli(["status"], {
-    stdout: (value) => outputs.push(value),
-    readInstallation: async () => null,
-  }), 0);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "unconfigured", connection: "disconnected", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
-
-  assert.equal(await runCli(["status"], {
-    stdout: (value) => outputs.push(value),
-    readInstallation: async () => config,
-    readSession: async () => null,
-  }), 0);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "disconnected", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
-
-  assert.equal(await runCli(["status"], {
-    stdout: (value) => outputs.push(value),
+  let selected;
+  const status = { instanceId, nativeProtocol: 2, login: "failed", checkedAt: 1234, error: "LOGIN_CHECK_FAILED", versions: { extension: "0.2.3", host: "0.2.3" } };
+  const common = {
     readInstallation: async () => config,
     readSession: async () => SESSION_INFO,
-    bridgeRequest: async () => { throw new BridgeError("LOGIN_CHECK_FAILED", "ignored"); },
-  }), 1);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "connected", login: "failed:LOGIN_CHECK_FAILED", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
-
-  assert.equal(await runCli(["status"], {
-    stdout: (value) => outputs.push(value),
-    readInstallation: async () => config,
-    readSession: async () => SESSION_INFO,
-    bridgeRequest: async () => { throw new BridgeError("BRIDGE_BUSY", "ignored"); },
-  }), 1);
-  assert.deepEqual(JSON.parse(outputs.pop()), { configuration: "configured", connection: "failed:BRIDGE_BUSY", login: "not_checked", versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
-
-  assert.equal(await runCli(["connect"], {
-    stdout: (value) => outputs.push(value),
-    readInstallation: async () => config,
-    readSession: async () => SESSION_INFO,
-    launch: async (bridgeConfig, pairedSession) => {
-      launched ??= bridgeConfig;
-      assert.equal(bridgeConfig, config);
-      assert.equal(pairedSession, SESSION_INFO.sessionId);
-      launches.push(pairedSession);
+    readConnections: async () => [record],
+    readSelection: async () => null,
+    inspectRunning: () => { throw new Error("must not launch when a candidate is active"); },
+    bridgeRequest: async (_config, _session, request, options) => {
+      assert.equal(options.instanceId, instanceId);
+      assert.equal(request.command, "status");
+      return status;
     },
-    bridgeWait: async (_config, sessionInfo, options) => {
-      waitTimeouts.push(options.timeoutMs);
-      if (waitTimeouts.length === 1) { waited ??= sessionInfo; throw new BridgeError("BRIDGE_TIMEOUT", "ignored"); }
-    },
+  };
+  assert.equal(await runCli(["status"], { ...common, stdout: (value) => outputs.push(value) }), 0);
+  assert.deepEqual(JSON.parse(outputs.pop()), {
+    configuration: "configured", connection: "connected", login: "failed", instanceId, checkedAt: 1234,
+    error: "LOGIN_CHECK_FAILED", versions: { cli: "unknown", host: "0.2.3", extension: "0.2.3" },
+  });
+  assert.equal(await runCli(["connections"], { ...common, stdout: (value) => outputs.push(value) }), 0);
+  assert.deepEqual(JSON.parse(outputs.pop()), [{ instanceId, login: "failed", checkedAt: 1234, error: "LOGIN_CHECK_FAILED", versions: status.versions }]);
+  assert.equal(await runCli(["connect", "--instance", instanceId], {
+    ...common,
+    stdout: (value) => outputs.push(value),
+    writeSelection: async (_config, _session, value) => { selected = value; },
   }), 0);
-  assert.equal(launched, config);
-  assert.deepEqual(waited, SESSION_INFO);
-  assert.deepEqual(launches, [SESSION_INFO.sessionId]);
-  assert.deepEqual(waitTimeouts, [500, 30_000]);
+  assert.equal(selected, instanceId);
   assert.equal(outputs.pop(), "Connected to the Chrome extension.");
   assert.equal(errors.length, 0);
-  assert.equal(outputs.some((value) => value.includes(SESSION_1)), false);
 });
 
-test("CLI parse passes only the fixed command shape and never logs the share URL", async () => {
+test("CLI parse uses one authenticated instance and never logs the share URL", async () => {
   const outputs = [];
   const errors = [];
   const shareUrl = "https://weixin.qq.com/sph/synthetic";
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
   let sent;
   const result = { title: "synthetic", previewUrl: "https://media.example/video.mp4", downloadUrl: "https://media.example/video.mp4" };
   assert.equal(await runCli(["parse", "--url", shareUrl], {
-    stdout: (value) => outputs.push(value),
-    stderr: (value) => errors.push(value),
+    stdout: (value) => outputs.push(value), stderr: (value) => errors.push(value),
     readInstallation: async () => ({ appSupportDir: "/tmp/bridge" }),
     readSession: async () => SESSION_INFO,
-    bridgeWait: async () => {},
+    readConnections: async () => [{ instanceId, nativeProtocol: 2 }],
+    readSelection: async () => null,
+    inspectRunning: () => { throw new Error("must not launch an active profile"); },
     bridgeRequest: async (_config, _session, request, options) => {
+      if (request.command === "status") return { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} };
       sent = { request, options };
       return result;
     },
@@ -624,43 +770,33 @@ test("CLI parse passes only the fixed command shape and never logs the share URL
   assert.equal(sent.request.command, "parse");
   assert.equal(sent.request.url, shareUrl);
   assert.deepEqual(Object.keys(sent.request).sort(), ["command", "id", "url"]);
+  assert.equal(sent.options.instanceId, instanceId);
   assert.equal(sent.options.timeoutMs, 90_000);
   assert.deepEqual(JSON.parse(outputs[0]), result);
   assert.equal(errors.length, 0);
-
-  assert.equal(await runCli(["download", "--url", shareUrl, "--filename", "../unsafe.mp4"], {
-    stdout: (value) => outputs.push(value),
-    stderr: (value) => errors.push(value),
-    readInstallation: async () => { throw new Error("must not read configuration"); },
-  }), 2);
-  assert.match(errors.pop(), /safe relative/);
 });
 
-test("CLI auto-connects before a download and never retries a task after timeout", async () => {
+test("CLI never retries a dispatched task and a saved profile does not fall back", async () => {
   const config = { extensionId: EXTENSION_ID, profileDirectory: "Profile 3", chromeUserDataDir: "/tmp/chrome", appSupportDir: "/tmp/bridge" };
   const errors = [];
-  const launches = [];
-  let bridgeWaitCount = 0;
+  const otherInstance = "423e4567-e89b-42d3-a456-426614174000";
+  const selectedInstance = "523e4567-e89b-42d3-a456-426614174000";
   let taskRequestCount = 0;
   const exitCode = await runCli(["download", "--url", "https://weixin.qq.com/sph/synthetic"], {
     stderr: (value) => errors.push(value),
     readInstallation: async () => config,
     readSession: async () => SESSION_INFO,
-    launch: async (_config, bootstrapSession) => launches.push(bootstrapSession),
-    bridgeWait: async () => {
-      bridgeWaitCount += 1;
-      if (bridgeWaitCount === 1) throw new BridgeError("BRIDGE_TIMEOUT", "ignored");
-    },
-    bridgeRequest: async () => {
-      taskRequestCount += 1;
+    readConnections: async () => [{ instanceId: otherInstance, nativeProtocol: 2 }],
+    readSelection: async () => selectedInstance,
+    inspectRunning: () => { throw new Error("no fallback launch should happen while Chrome is running"); },
+    bridgeRequest: async (_config, _session, request) => {
+      if (request.command !== "status") taskRequestCount += 1;
       throw new BridgeError("BRIDGE_TIMEOUT", "ignored");
     },
   });
   assert.equal(exitCode, 1);
-  assert.deepEqual(launches, [SESSION_INFO.sessionId]);
-  assert.equal(bridgeWaitCount, 2);
-  assert.equal(taskRequestCount, 1);
-  assert.deepEqual(errors, [`bridge-authentication BRIDGE_TIMEOUT: ${BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT}`]);
+  assert.equal(taskRequestCount, 0, "a different active instance cannot replace the saved selection");
+  assert.equal(errors.length, 1);
 });
 
 test("agent returns only selected video fields and waits for Chrome's real download outcome", async () => {
@@ -801,6 +937,7 @@ test("socket access failures stay distinct from disconnected bridge status and r
     stderr: (value) => stderr.push(value),
     readInstallation: async () => config,
     readSession: async () => SESSION_INFO,
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
     bridgeRequest: (bridgeConfig, sessionInfo, request, options) => requestBridge(
       bridgeConfig,
       sessionInfo,
@@ -825,36 +962,39 @@ test("socket access failures stay distinct from disconnected bridge status and r
     stderr: (value) => connectErrors.push(value),
     readInstallation: async () => config,
     readSession: async () => SESSION_INFO,
-    bridgeWait: async () => { throw new BridgeError("BRIDGE_CONNECTION_FAILED", rawError.message); },
+    readSelection: async () => "423e4567-e89b-42d3-a456-426614174000",
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+    bridgeRequest: (bridgeConfig, sessionInfo, request, options) => requestBridge(
+      bridgeConfig,
+      sessionInfo,
+      request,
+      { ...options, connectImpl: () => socketFor(rawError) },
+    ),
   });
   assert.equal(connectStatus, 1);
   assert.equal(connectErrors[0], `bridge-authentication BRIDGE_CONNECTION_FAILED: ${BRIDGE_ERROR_MESSAGES.BRIDGE_CONNECTION_FAILED}`);
   assert.equal(connectErrors[0].includes("EACCES"), false);
 });
 
-test("waitForBridge rejects a mismatched IPC secret and connect does not rotate the session", async () => {
+test("selected connection rejects a mismatched IPC secret without changing selection", async () => {
   await withShortTempDir(async (root) => {
     const config = { appSupportDir: root };
-    const socketPath = bridgeSocketPath(config, SESSION_1);
+    const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+    const socketPath = bridgeSocketPath(config, SESSION_1, instanceId);
     const server = createAuthenticatedFakeServer({ hostSecret: "c".repeat(64) });
     await new Promise((resolve) => server.listen(socketPath, resolve));
 
     const errors = [];
-    let launchedChrome = false;
     const exitCode = await runCli(["connect"], {
       stderr: (value) => errors.push(value),
       readInstallation: async () => config,
       readSession: async () => SESSION_INFO,
-      bridgeWait: (bridgeConfig, sessionInfo, options) => waitForBridge(bridgeConfig, sessionInfo, {
-        ...options,
-        timeoutMs: 250,
-      }),
-      launch: async () => { launchedChrome = true; },
+      readSelection: async () => instanceId,
+      readConnections: async () => [{ version: 1, sessionId: SESSION_1, instanceId, generation: REQUEST_ID, nativeProtocol: 2 }],
     });
     await new Promise((resolve) => server.close(resolve));
 
     assert.equal(exitCode, 1);
     assert.equal(errors[0], `bridge-authentication BRIDGE_SESSION_MISMATCH: ${BRIDGE_ERROR_MESSAGES.BRIDGE_SESSION_MISMATCH}`);
-    assert.equal(launchedChrome, false);
   });
 });
