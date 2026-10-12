@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PARSE_ERROR_MESSAGES } from "../../../src/core.mjs";
 import { BRIDGE_ERROR_MESSAGES, isSafeRelativeMp4Filename, validateBridgeCommand } from "../../../src/native-messaging.mjs";
 import { BridgeSetupError, installBridge, listBridgeProfiles, readBridgeConnections, readBridgeInstallation, readBridgeSelection, readBridgeSessionInfo, writeBridgeSelection } from "./bridge-install.mjs";
-import { BridgeError, discoverBridgeConnections, requestBridge, waitForBridge } from "./bridge-client.mjs";
+import { BridgeError, discoverBridgeConnections, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
 import { diagnoseEnvironment, inspectChromeRunning, launchChrome } from "./diagnostics.mjs";
 
 const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID] | connections | status | connect [--instance UUID] | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
@@ -58,32 +58,21 @@ async function activeConnections(config, sessionInfo, options) {
   return discoverBridgeConnections(config, sessionInfo, {
     readConnections: options.readConnections,
     request: options.bridgeRequest,
+    waitForLegacyBridge: options.waitForLegacyBridge,
     refreshLogin: options.refreshLogin === true,
   });
 }
 
 async function selectConnection(config, sessionInfo, options) {
-  const persisted = options.instance ?? await options.readSelection(config, sessionInfo);
-  if (persisted) {
-    const records = await options.readConnections(config, sessionInfo);
-    if (!records.some((record) => record.instanceId === persisted && record.nativeProtocol === 2)) return null;
-    const selected = await activeConnections(config, sessionInfo, {
-      ...options,
-      readConnections: async () => records.filter((record) => record.instanceId === persisted),
-      refreshLogin: options.refreshLogin === true,
-    });
-    return selected[0] ?? null;
-  }
-  const connections = await activeConnections(config, sessionInfo, { ...options, refreshLogin: false });
-  if (connections.length > 1) throw new BridgeError("BRIDGE_PROFILE_AMBIGUOUS", BRIDGE_ERROR_MESSAGES.BRIDGE_PROFILE_AMBIGUOUS);
-  const candidate = connections[0];
-  if (!candidate || options.refreshLogin !== true) return candidate ?? null;
-  const refreshed = await activeConnections(config, sessionInfo, {
-    ...options,
-    readConnections: async () => [{ instanceId: candidate.instanceId, nativeProtocol: 2 }],
-    refreshLogin: true,
+  const { connection } = await selectBridgeConnection(config, sessionInfo, {
+    instanceId: options.instance,
+    readConnections: options.readConnections,
+    readSelection: options.readSelection,
+    request: options.bridgeRequest,
+    waitForLegacyBridge: options.waitForLegacyBridge,
+    refreshLogin: options.refreshLogin === true,
   });
-  return refreshed[0] ?? null;
+  return connection;
 }
 
 async function ensureBridgeConnection(config, sessionInfo, options) {
@@ -91,7 +80,7 @@ async function ensureBridgeConnection(config, sessionInfo, options) {
   if (first) return first;
   const running = options.inspectRunning();
   if (running === "unknown") throw new BridgeError("CHROME_STATUS_UNAVAILABLE", "无法确认 Chrome 是否正在运行；请检查本机进程检测权限后重试。");
-  if (running === "not_running" && config.profileDirectory) await options.launch(config);
+  if (running === "not_running") await options.launch(config);
   const deadline = Date.now() + (options.connectionWaitMs ?? BRIDGE_WAIT_MS);
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   while (Date.now() < deadline) {
@@ -100,7 +89,7 @@ async function ensureBridgeConnection(config, sessionInfo, options) {
     if (active) return active;
   }
   if (!config.profileDirectory) {
-    throw cliBridgeError("BRIDGE_TIMEOUT", "bridge", "请在日常使用的 Chrome 中启用扩展后重试；需要选择本机 Chrome 用户时先重新运行 install-bridge --profile。" );
+    throw cliBridgeError("BRIDGE_TIMEOUT", "bridge", "请在日常使用的 Chrome 中启用扩展后重试；如果已绑定实例，请在对应 Chrome 用户中启动扩展。");
   }
   throw new BridgeError("BRIDGE_TIMEOUT", BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT);
 }
@@ -118,7 +107,7 @@ export async function runCli(argv, {
   writeSelection = writeBridgeSelection,
   inspectRunning = inspectChromeRunning,
   bridgeRequest = requestBridge,
-  bridgeWait = waitForBridge,
+  waitForLegacyBridge = waitForBridge,
   connectionWaitMs,
   sleep,
   diagnose = diagnoseEnvironment,
@@ -156,7 +145,7 @@ export async function runCli(argv, {
       const config = await readInstallation();
       if (!config) throw new BridgeError("BRIDGE_NOT_CONFIGURED", BRIDGE_ERROR_MESSAGES.BRIDGE_NOT_CONFIGURED);
       const sessionInfo = await readSession(config);
-      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地配对信息缺失。请重新运行 install-bridge 注册桥接，再运行 pairing-info。");
+      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地桥接注册信息缺失或损坏。请重新运行 install-bridge 修复桥接注册。");
       stdout(JSON.stringify({ sessionId: sessionInfo.sessionId }));
       return 0;
     }
@@ -166,7 +155,7 @@ export async function runCli(argv, {
         const result = await diagnose({
           configuration: "unconfigured",
           candidate: { profile: options.profile, extensionId: options["extension-id"] },
-        }, { bridgeWait, includeRuntime: true });
+        }, { waitForLegacyBridge, includeRuntime: true });
         stdout(JSON.stringify(result));
         return 0;
       }
@@ -183,7 +172,13 @@ export async function runCli(argv, {
         try { sessionInfo = await readSession(config); }
         catch { sessionInfo = null; }
       }
-      const result = await diagnose({ configuration, config, sessionInfo }, { bridgeWait, includeRuntime: true });
+      const result = await diagnose({ configuration, config, sessionInfo }, {
+        waitForLegacyBridge,
+        readConnections,
+        readSelection,
+        bridgeRequest,
+        includeRuntime: true,
+      });
       stdout(JSON.stringify(result));
       return 0;
     }
@@ -200,7 +195,7 @@ export async function runCli(argv, {
     const sessionInfo = await readSession(config);
 
     const connectionOptions = {
-      readConnections, readSelection, bridgeRequest, launch, inspectRunning,
+      readConnections, readSelection, bridgeRequest, waitForLegacyBridge, launch, inspectRunning,
       ...(connectionWaitMs === undefined ? {} : { connectionWaitMs }),
       ...(sleep ? { sleep } : {}),
       ...(command === "connect" && options.instance ? { instance: options.instance } : {}),
@@ -230,9 +225,20 @@ export async function runCli(argv, {
         writeStatus({ configuration: "configured", connection: "connected", login: connection.login, instanceId: connection.instanceId, checkedAt: connection.checkedAt, ...(connection.error ? { error: connection.error } : {}) }, connection.versions);
       } catch (error) {
         const code = error instanceof BridgeError ? error.code : "BRIDGE_PROTOCOL_ERROR";
-        if (["BRIDGE_DISCONNECTED", "BRIDGE_PROFILE_AMBIGUOUS"].includes(code)) {
+        if (code === "BRIDGE_PROFILE_AMBIGUOUS") {
+          writeStatus({
+            configuration: "configured",
+            connection: `failed:${code}`,
+            login: "not_checked",
+            error: code,
+            message: ERROR_MESSAGES[code],
+            nextAction: "connect --instance <UUID>",
+          });
+          return 1;
+        }
+        if (code === "BRIDGE_DISCONNECTED") {
           writeStatus({ configuration: "configured", connection: "disconnected", login: "not_checked" });
-          return code === "BRIDGE_DISCONNECTED" ? 0 : 1;
+          return 0;
         }
         writeStatus({ configuration: "configured", connection: `failed:${code}`, login: "not_checked" });
         return 1;
@@ -241,7 +247,7 @@ export async function runCli(argv, {
     }
 
     if (command === "connect") {
-      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地配对信息缺失。请重新运行 install-bridge 注册桥接，再运行 pairing-info 获取 sessionId。");
+      if (!sessionInfo) throw cliBridgeError("BRIDGE_CONFIG_INVALID", "resource", "本地桥接注册信息缺失或损坏。请重新运行 install-bridge 修复桥接注册。");
       const connection = await ensureBridgeConnection(config, sessionInfo, connectionOptions);
       if (options.instance) await writeSelection(config, sessionInfo, options.instance);
       stdout("Connected to the Chrome extension.");
@@ -251,6 +257,10 @@ export async function runCli(argv, {
     if (command === "parse" || command === "download") {
       if (!sessionInfo) throw new BridgeError("BRIDGE_DISCONNECTED", BRIDGE_ERROR_MESSAGES.BRIDGE_DISCONNECTED);
       const connection = await ensureBridgeConnection(config, sessionInfo, connectionOptions);
+      if (connection.login !== "authenticated") {
+        const code = connection.login === "anonymous" ? "AUTH_EXPIRED" : "LOGIN_CHECK_FAILED";
+        throw new BridgeError(code, ERROR_MESSAGES[code]);
+      }
       const request = command === "parse"
         ? { id: randomUUID(), command, url: options.url }
         : {

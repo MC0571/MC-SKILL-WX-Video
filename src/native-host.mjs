@@ -328,7 +328,7 @@ export async function startNativeHost({
 
   const startServer = async () => {
     if (platform === "win32") {
-      const pipeName = instanceId
+      const pipeName = wireVersion === 2
         ? windowsPipeName(appSupportDir, sessionId, instanceId)
         : windowsPipeName(appSupportDir, sessionId);
       socketPath = `\\\\.\\pipe\\${pipeName}`;

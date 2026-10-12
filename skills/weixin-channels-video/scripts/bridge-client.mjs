@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { PARSE_ERROR_MESSAGES } from "../../../src/core.mjs";
 import { BRIDGE_ERROR_MESSAGES, BridgeFrameDecoder, encodeBridgeFrame, MAX_BRIDGE_MESSAGE_BYTES, validateBridgeCommand, validateBridgeResponse } from "../../../src/native-messaging.mjs";
 import { createIpcNonce, createIpcProof, IPC_AUTH_TIMEOUT_MS, isIpcSession, verifyIpcProof } from "../../../src/native-ipc.mjs";
-import { bridgeSocketPath, readBridgeConnections, readBridgeSessionInfo } from "./bridge-install.mjs";
+import { bridgeSocketPath, readBridgeConnections, readBridgeSelection, readBridgeSessionInfo } from "./bridge-install.mjs";
 
 export class BridgeError extends Error {
   constructor(code, message, details) {
@@ -237,6 +237,44 @@ export async function discoverBridgeConnections(config, sessionInfo, {
     }
   }
   return active;
+}
+
+export async function selectBridgeConnection(config, sessionInfo, {
+  instanceId,
+  readSelection = readBridgeSelection,
+  readConnections = readBridgeConnections,
+  request = requestBridge,
+  waitForLegacyBridge = waitForBridge,
+  refreshLogin = false,
+} = {}) {
+  const selectedInstanceId = instanceId ?? await readSelection(config, sessionInfo);
+  const records = await readConnections(config, sessionInfo);
+  if (selectedInstanceId) {
+    const selectedRecord = records.find((record) => record.instanceId === selectedInstanceId);
+    if (!selectedRecord) return { connection: null, selectedInstanceId };
+    const connections = await discoverBridgeConnections(config, sessionInfo, {
+      readConnections: async () => [selectedRecord], request, waitForLegacyBridge, refreshLogin,
+    });
+    return { connection: connections[0] ?? null, selectedInstanceId };
+  }
+  const connections = await discoverBridgeConnections(config, sessionInfo, {
+    readConnections: async () => records,
+    request,
+    waitForLegacyBridge,
+    refreshLogin: false,
+  });
+  if (connections.length > 1) {
+    throw new BridgeError("BRIDGE_PROFILE_AMBIGUOUS", BRIDGE_ERROR_MESSAGES.BRIDGE_PROFILE_AMBIGUOUS);
+  }
+  const candidate = connections[0];
+  if (!candidate || !refreshLogin) return { connection: candidate ?? null, selectedInstanceId: null };
+  const refreshed = await discoverBridgeConnections(config, sessionInfo, {
+    readConnections: async () => [{ instanceId: candidate.instanceId, nativeProtocol: 2 }],
+    request,
+    waitForLegacyBridge,
+    refreshLogin: true,
+  });
+  return { connection: refreshed[0] ?? null, selectedInstanceId: null };
 }
 
 export async function requestCurrentBridge(config, request, options) {

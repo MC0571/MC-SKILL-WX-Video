@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join, win32 } from "node:path";
 import { BRIDGE_ERROR_MESSAGES, SESSION_ID_PATTERN } from "../../../src/native-messaging.mjs";
 import { windowsPowerShellBuiltinModuleImport, windowsPowerShellPath } from "./windows-security.mjs";
-import { BridgeError, waitForBridge } from "./bridge-client.mjs";
-import { inspectBridgeComponents } from "./bridge-install.mjs";
+import { BridgeError, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
+import { inspectBridgeComponents, readBridgeConnections, readBridgeSelection } from "./bridge-install.mjs";
 import { MIN_NODE_VERSION, RUNTIME_PROTOCOL } from "./runtime-support.mjs";
 import { defaultChromeUserDataDir, inspectChromeProfile, selectChromeProfile } from "./chrome-profile.mjs";
 
@@ -237,15 +237,19 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
     actions.push("repair_bridge_if_authorized");
   }
   if (bridge.session === "missing") actions.push("repair_bridge_registration");
-  else if (bridge.session === "invalid") actions.push("repair_extension_pairing_after_user_approval");
+  else if (bridge.session === "invalid") actions.push("repair_bridge_registration");
   if (configuration === "configured" && !config?.profileDirectory) {
     if (actions.length) return [...new Set(actions)];
-    return bridge.registration === "valid" && bridge.host === "present" && bridge.launcher === "valid" &&
-      bridge.node === "available" && bridge.session === "available" && (platform !== "win32" || bridge.security === "valid")
-      ? ["complete_manual_extension_pairing"]
-      : ["inspect_chrome_extension_and_bridge_manually"];
+    if (connection.state === "profile_ambiguous") return ["connect_to_one_chrome_profile"];
+    if (connection.state === "selected_offline") return ["restore_selected_chrome_connection"];
+    if (connection.state === "protocol_unsupported") return ["update_extension_and_skill"];
+    if (connection.state === "disconnected") return ["open_chrome_and_enable_extension"];
+    return ["inspect_chrome_extension_and_bridge_manually"];
   }
   if (connection.state === "session_mismatch") actions.push("repair_bridge_session_mismatch");
+  else if (connection.state === "profile_ambiguous") actions.push("connect_to_one_chrome_profile");
+  else if (connection.state === "selected_offline") actions.push("restore_selected_chrome_connection");
+  else if (connection.state === "protocol_unsupported") actions.push("update_extension_and_skill");
   else if (["connection_failed", "disconnected", "timeout"].includes(connection.state)) actions.push("restore_connection_before_next_task");
   if (configuration !== "configured" && !actions.length) actions.push("configure_bridge_and_select_profile");
   if (!actions.length) actions.push("inspect_chrome_extension_and_bridge_manually");
@@ -343,7 +347,10 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
   inspectProfile = inspectChromeProfile,
   selectCandidateProfile = selectChromeProfile,
   inspectBridge = inspectBridgeComponents,
-  bridgeWait = waitForBridge,
+  readConnections = readBridgeConnections,
+  readSelection = readBridgeSelection,
+  bridgeRequest = requestBridge,
+  waitForLegacyBridge = waitForBridge,
   includeRuntime = false,
 } = {}) {
   let chromeInfo = { installation: "unknown", version: null, compatibility: "unknown" };
@@ -369,17 +376,33 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
       connection = { state: "session_mismatch" };
     } else if (SESSION_ID_PATTERN.test(bridgeSession?.sessionId ?? bridgeSession ?? "")) {
       try {
-        await bridgeWait(config, bridgeSession, { timeoutMs: 500 });
-        connection = { state: "connected" };
+        const selected = await selectBridgeConnection(config, bridgeSession, {
+          readConnections,
+          readSelection,
+          request: bridgeRequest,
+          waitForLegacyBridge,
+        });
+        if (selected.connection) {
+          connection = {
+            state: "connected",
+            instanceId: selected.connection.instanceId,
+            login: selected.connection.login,
+            checkedAt: selected.connection.checkedAt,
+          };
+        } else if (selected.selectedInstanceId) {
+          connection = { state: "selected_offline", instanceId: selected.selectedInstanceId };
+        } else {
+          connection = { state: "disconnected" };
+        }
       } catch (error) {
         const code = error instanceof BridgeError ? error.code : "";
-        connection = {
-          state: code === "BRIDGE_SESSION_MISMATCH" ? "session_mismatch"
-            : code === "BRIDGE_TIMEOUT" ? "timeout"
-              : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
-                : code === "BRIDGE_DISCONNECTED" ? "disconnected"
-                  : "unknown",
-        };
+        connection = { state: code === "BRIDGE_SESSION_MISMATCH" ? "session_mismatch"
+          : code === "BRIDGE_PROFILE_AMBIGUOUS" ? "profile_ambiguous"
+            : code === "BRIDGE_PROTOCOL_UNSUPPORTED" ? "protocol_unsupported"
+              : code === "BRIDGE_TIMEOUT" ? "timeout"
+                : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
+                  : code === "BRIDGE_DISCONNECTED" ? "disconnected"
+                    : "unknown" };
       }
     }
   }

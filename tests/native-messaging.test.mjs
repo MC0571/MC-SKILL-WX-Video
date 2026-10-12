@@ -638,7 +638,15 @@ test("CLI resolves ambiguity before login refresh and refreshes only the selecte
   assert.equal(await runCli(["status"], { ...common, stdout: (value) => outputs.push(value), stderr: (value) => errors.push(value) }), 1);
   assert.equal(ambiguousCalls.length, 2);
   assert.equal(ambiguousCalls.some(({ request }) => request.refreshLogin), false);
-  assert.equal(JSON.parse(outputs[0]).connection, "disconnected");
+  assert.deepEqual(JSON.parse(outputs[0]), {
+    configuration: "configured",
+    connection: "failed:BRIDGE_PROFILE_AMBIGUOUS",
+    login: "not_checked",
+    error: "BRIDGE_PROFILE_AMBIGUOUS",
+    message: BRIDGE_ERROR_MESSAGES.BRIDGE_PROFILE_AMBIGUOUS,
+    nextAction: "connect --instance <UUID>",
+    versions: { cli: "unknown", host: "unknown", extension: "unknown" },
+  });
 
   const refreshCalls = [];
   const selected = await runCli(["parse", "--url", "https://weixin.qq.com/sph/synthetic"], {
@@ -656,6 +664,47 @@ test("CLI resolves ambiguity before login refresh and refreshes only the selecte
   assert.equal(refreshCalls.length, 2);
   assert.deepEqual(refreshCalls.map(({ options }) => options.instanceId), [second, second]);
   assert.equal(refreshCalls[0].request.refreshLogin, true);
+});
+
+test("CLI requires a confirmed authenticated login before dispatching parse or download", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  for (const command of ["parse", "download"]) {
+    for (const login of ["anonymous", "failed", "not_checked"]) {
+      const calls = [];
+      const errors = [];
+      const exitCode = await runCli([command, "--url", "https://weixin.qq.com/sph/synthetic"], {
+        stderr: (value) => errors.push(value),
+        readInstallation: async () => ({ appSupportDir: "/tmp/bridge" }),
+        readSession: async () => SESSION_INFO,
+        readSelection: async () => instanceId,
+        readConnections: async () => [{ instanceId, nativeProtocol: 2 }],
+        bridgeRequest: async (_config, _session, request, options) => {
+          calls.push({ request, options });
+          return request.command === "status"
+            ? { instanceId, nativeProtocol: 2, login, checkedAt: 100, versions: {} }
+            : { title: "must-not-dispatch" };
+        },
+      });
+      assert.equal(exitCode, 1);
+      assert.deepEqual(calls.map(({ request }) => request.command), ["status"]);
+      assert.equal(calls[0].request.refreshLogin, true);
+      assert.match(errors[0], login === "anonymous" ? /AUTH_EXPIRED/ : /LOGIN_CHECK_FAILED/);
+    }
+    let dispatched;
+    assert.equal(await runCli([command, "--url", "https://weixin.qq.com/sph/synthetic"], {
+      readInstallation: async () => ({ appSupportDir: "/tmp/bridge" }),
+      readSession: async () => SESSION_INFO,
+      readSelection: async () => instanceId,
+      readConnections: async () => [{ instanceId, nativeProtocol: 2 }],
+      bridgeRequest: async (_config, _session, request) => {
+        if (request.command === "status") return { instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 100, versions: {} };
+        dispatched = request.command;
+        return { title: "synthetic", state: "complete" };
+      },
+      stdout() {},
+    }), 0);
+    assert.equal(dispatched, command);
+  }
 });
 
 test("wire v2 binds an authenticated status to a private per-instance discovery record", async () => {
