@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -115,6 +115,50 @@ test("profile inspection preserves access-denied state without exposing filesyst
   assert.deepEqual(result.actions, ["open_chrome_extensions"]);
   assert.equal(JSON.stringify(result).includes("EACCES"), false);
   assert.equal(JSON.stringify(result).includes("/private/Chrome User Data"), false);
+});
+
+test("profile inspection stops after a preferences access denial and hands off one action", async () => {
+  await withChromeProfile(async ({ userDataDir, profileDirectory }) => {
+    const profilePath = join(userDataDir, profileDirectory);
+    const securePreferencesPath = join(profilePath, "Secure Preferences");
+    const preferencesPath = join(profilePath, "Preferences");
+    const settings = JSON.stringify({ extensions: { settings: { [EXTENSION_ID]: { state: 1 } } } });
+    await writeFile(securePreferencesPath, settings);
+    await writeFile(preferencesPath, settings);
+
+    for (const code of ["EPERM", "EACCES"]) {
+      const denied = Object.assign(new Error("private path"), { code });
+      const inspectedPaths = [];
+      const profile = await inspectChromeProfile({
+        profileDirectory,
+        userDataDir,
+        extensionId: EXTENSION_ID,
+        lstatImpl: async (path) => { inspectedPaths.push(path); return lstat(path); },
+        readFileImpl: async (path, encoding) => {
+          inspectedPaths.push(path);
+          if (path === securePreferencesPath) throw denied;
+          return readFile(path, encoding);
+        },
+      });
+      assert.deepEqual(profile, { state: "access_denied", extension: "unknown" });
+      assert.equal(inspectedPaths.includes(preferencesPath), false);
+
+      const result = await diagnoseEnvironment({
+        configuration: "configured",
+        config: { profileDirectory, chromeUserDataDir: userDataDir, extensionId: EXTENSION_ID },
+        sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+      }, {
+        inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+        inspectRunning: () => "running",
+        inspectProfile: async () => profile,
+        inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" }),
+        readSelection: async () => null,
+        readConnections: async () => [],
+        waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "ignored"); },
+      });
+      assert.deepEqual(result.actions, ["open_chrome_extensions"]);
+    }
+  });
 });
 
 test("diagnosis keeps unavailable evidence unknown and redacts local identifiers", async () => {

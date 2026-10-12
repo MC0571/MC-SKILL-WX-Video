@@ -99,7 +99,6 @@ export async function inspectChromeProfile({
   }
   const settings = [];
   let unreadable = false;
-  let accessDenied = false;
   for (const name of ['Secure Preferences', 'Preferences']) {
     try {
       const preferencesPath = join(userDataDir, profileDirectory, name);
@@ -111,8 +110,10 @@ export async function inspectChromeProfile({
         settings.push(Object.hasOwn(installed, extensionId) ? extensionState(installed[extensionId]) : null);
       }
     } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        return { state: 'access_denied', extension: 'unknown' };
+      }
       if (error.code !== 'ENOENT') unreadable = true;
-      if (error.code === 'EPERM' || error.code === 'EACCES') accessDenied = true;
     }
   }
   if (settings.some((state) => state !== null)) {
@@ -125,7 +126,6 @@ export async function inspectChromeProfile({
         : 'recorded_unknown',
     };
   }
-  if (accessDenied) return { state: 'access_denied', extension: 'unknown' };
   if (unreadable || !settings.length) return { state: 'exists', extension: 'unknown' };
   return { state: 'exists', extension: 'missing_or_id_mismatch_possible' };
 }
