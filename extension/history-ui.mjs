@@ -75,7 +75,7 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   }
 
   row.append(details);
-  if (item.state === "complete" && item.exists === true) {
+  if (item.state === "complete" && item.exists !== false) {
     const revealButton = documentApi.createElement("button");
     revealButton.type = "button";
     revealButton.className = "secondary-button history-reveal-button";
@@ -164,10 +164,13 @@ export function initializeDownloadHistoryUi({
   let nextCursor;
   let hasMore = false;
   let historyItems = [];
+  let recentItems = [];
   let historyRequest = 0;
   let recentRequest = 0;
   let historyVisible = false;
   let loadingMore = false;
+  let retryFullLoad = false;
+  let retryPageSize = HISTORY_PAGE_SIZE;
   let active = true;
 
   async function loadRecent() {
@@ -175,6 +178,7 @@ export function initializeDownloadHistoryUi({
     try {
       const page = await loadDownloadHistoryPage(chromeApi, { pageSize: RECENT_PAGE_SIZE, order: "desc" });
       if (!active || request !== recentRequest) return;
+      recentItems = page.items;
       renderItems({ container: recentList, empty: recentEmpty, items: page.items, documentApi, chromeApi });
     } catch {
       if (!active || request !== recentRequest) return;
@@ -182,13 +186,13 @@ export function initializeDownloadHistoryUi({
     }
   }
 
-  async function loadHistory({ append = false } = {}) {
+  async function loadHistory({ append = false, pageSize = HISTORY_PAGE_SIZE } = {}) {
     if (loadingMore && append) return;
     const request = ++historyRequest;
     if (!append) {
-      historyItems = [];
-      nextCursor = undefined;
-      hasMore = false;
+      retryFullLoad = false;
+      retryPageSize = pageSize;
+      loadMoreButton.disabled = true;
       liveStatus.textContent = "正在读取下载记录…";
     }
     if (append) {
@@ -199,26 +203,32 @@ export function initializeDownloadHistoryUi({
     try {
       const page = await loadDownloadHistoryPage(chromeApi, {
         ...(append && nextCursor !== undefined ? { cursor: nextCursor } : {}),
-        pageSize: HISTORY_PAGE_SIZE,
+        pageSize,
         order,
       });
       if (!active || request !== historyRequest) return;
       historyItems = append ? [...historyItems, ...page.items] : page.items;
       nextCursor = page.nextCursor;
       hasMore = page.hasMore;
+      retryFullLoad = false;
       renderItems({ container: historyList, empty: historyEmpty, items: historyItems, documentApi, chromeApi });
       liveStatus.textContent = historyItems.length ? `${historyItems.length} 条记录` : "";
       loadMoreButton.hidden = !hasMore;
       loadMoreButton.textContent = "加载更多";
     } catch {
       if (!active || request !== historyRequest) return;
-      if (!append) {
+      const canKeepExistingResults = !append && historyItems.length > 0;
+      if (!append && !canKeepExistingResults) {
         renderItems({ container: historyList, empty: historyEmpty, items: [], documentApi, chromeApi, failed: true });
       }
       liveStatus.textContent = "暂时无法读取下载记录。";
       if (append && hasMore) {
         loadMoreButton.hidden = false;
         loadMoreButton.textContent = "重试加载更多";
+      } else if (canKeepExistingResults) {
+        retryFullLoad = true;
+        loadMoreButton.hidden = false;
+        loadMoreButton.textContent = "重试读取记录";
       } else {
         loadMoreButton.hidden = true;
       }
@@ -252,14 +262,25 @@ export function initializeDownloadHistoryUi({
     orderButton.textContent = order === "desc" ? "切换为从旧到新" : "切换为从新到旧";
     void loadHistory();
   });
-  loadMoreButton.addEventListener("click", () => { void loadHistory({ append: true }); });
+  loadMoreButton.addEventListener("click", () => {
+    if (retryFullLoad) {
+      void loadHistory({ pageSize: retryPageSize });
+    } else {
+      void loadHistory({ append: true });
+    }
+  });
   loadMoreButton.hidden = true;
   orderButton.textContent = "切换为从旧到新";
 
   const stopWatching = typeof chromeApi?.downloads?.onChanged?.addListener === "function"
-    ? watchDownloadHistory(chromeApi, () => {
+    ? watchDownloadHistory(chromeApi, (item, change) => {
+      const removedVisibleItem = change?.removed === true &&
+        (recentItems.some((entry) => entry.id === change.id) || historyItems.some((entry) => entry.id === change.id));
+      if (!item && !removedVisibleItem) return;
       void loadRecent();
-      if (historyVisible) void loadHistory();
+      if (historyVisible) {
+        void loadHistory({ pageSize: Math.max(HISTORY_PAGE_SIZE, historyItems.length) });
+      }
     })
     : () => {};
   windowApi?.addEventListener?.("pagehide", () => {

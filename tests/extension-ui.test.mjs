@@ -119,7 +119,7 @@ function makeChromeApi({ items = [], storage = {}, sourceId = "jdecfnemmnhbpamcf
       show: onShow,
     },
   };
-  return { chromeApi, state, storageListeners };
+  return { chromeApi, state, storageListeners, downloadListeners };
 }
 
 const historySelectors = [
@@ -250,6 +250,7 @@ test("missing download rows remain gray with precise status, and failed reveal r
   const missing = download(1, { exists: false });
   let showAttempts = 0;
   const existing = download(2);
+  existing.exists = undefined;
   const { chromeApi } = makeChromeApi({ items: [missing, existing], onShow: () => {
     showAttempts += 1;
     if (showAttempts === 1) throw new Error("temporary error");
@@ -267,7 +268,7 @@ test("missing download rows remain gray with precise status, and failed reveal r
 
   const existingRow = firstSectionList.children.find((row) => row.dataset.fileMissing === "false");
   const revealButton = existingRow.children.at(-1);
-  existing.exists = undefined;
+  assert.equal(revealButton.textContent, "在文件夹中显示");
   await revealButton.click();
   assert.equal(revealButton.textContent, "状态未知，重试");
   assert.equal(revealButton.disabled, false);
@@ -281,6 +282,119 @@ test("missing download rows remain gray with precise status, and failed reveal r
   await revealButton.click();
   assert.equal(revealButton.disabled, false);
   assert.equal(showAttempts, 3);
+});
+
+test("download history ignores unrelated events and refreshes without collapsing loaded rows", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const items = Array.from({ length: 24 }, (_, index) => download(index + 1));
+  const foreign = { ...download(100), byExtensionId: "another-extension" };
+  const { chromeApi, downloadListeners } = makeChromeApi({ items: [...items, foreign] });
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const loadMore = documentApi.querySelector("#history-load-more");
+  await loadMore.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const rows = () => documentApi.querySelector("#download-history-list").children[0].children[1].children;
+  assert.equal(rows().length, 24);
+
+  for (const listener of downloadListeners) listener({ id: foreign.id, state: "interrupted" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 24, "foreign download changes must not reset the visible page depth");
+
+  items.at(-1).filename = "/downloads/updated-clip.mp4";
+  for (const listener of downloadListeners) listener({ id: items.at(-1).id, state: "complete" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 24, "refreshing a visible history should retain all loaded rows");
+  assert.equal(rows()[0].children[0].children[0].textContent, "updated-clip.mp4");
+});
+
+test("overlapping own download changes retain expanded history depth", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const items = Array.from({ length: 24 }, (_, index) => download(index + 1));
+  const { chromeApi, downloadListeners } = makeChromeApi({ items });
+  const search = chromeApi.downloads.search.bind(chromeApi.downloads);
+  const firstHistoryRefreshStarted = deferred();
+  const releaseFirstHistoryRefresh = deferred();
+  let holdFirstHistoryRefresh = false;
+  let refreshSearchCount = 0;
+  chromeApi.downloads.search = async (query) => {
+    if (holdFirstHistoryRefresh && query.id === undefined) {
+      refreshSearchCount += 1;
+      if (refreshSearchCount === 2) {
+        firstHistoryRefreshStarted.resolve();
+        await releaseFirstHistoryRefresh.promise;
+      }
+    }
+    return search(query);
+  };
+
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#history-load-more").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const rows = () => documentApi.querySelector("#download-history-list").children[0].children[1].children;
+  assert.equal(rows().length, 24);
+
+  holdFirstHistoryRefresh = true;
+  items[0].filename = "/downloads/first-change.mp4";
+  for (const listener of downloadListeners) listener({ id: items[0].id, state: "complete" });
+  await firstHistoryRefreshStarted.promise;
+
+  items.at(-1).filename = "/downloads/second-change.mp4";
+  for (const listener of downloadListeners) listener({ id: items.at(-1).id, state: "complete" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 24);
+  assert.equal(rows()[0].children[0].children[0].textContent, "second-change.mp4");
+
+  releaseFirstHistoryRefresh.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("failed history refresh keeps visible rows and offers a full retry", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const items = Array.from({ length: 24 }, (_, index) => download(index + 1));
+  const { chromeApi, downloadListeners } = makeChromeApi({ items });
+  const search = chromeApi.downloads.search.bind(chromeApi.downloads);
+  let failNextRefresh = false;
+  let refreshSearchCount = 0;
+  chromeApi.downloads.search = async (query) => {
+    if (failNextRefresh && query.id === undefined) {
+      refreshSearchCount += 1;
+      if (refreshSearchCount === 2) {
+        failNextRefresh = false;
+        throw new Error("temporary refresh failure");
+      }
+    }
+    return search(query);
+  };
+
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#history-load-more").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const rows = () => documentApi.querySelector("#download-history-list").children[0].children[1].children;
+  assert.equal(rows().length, 24);
+
+  failNextRefresh = true;
+  items.at(-1).filename = "/downloads/after-failed-refresh.mp4";
+  for (const listener of downloadListeners) listener({ id: items.at(-1).id, state: "complete" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 24);
+  const retry = documentApi.querySelector("#history-load-more");
+  assert.equal(retry.textContent, "重试读取记录");
+
+  await retry.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 24);
+  assert.equal(rows()[0].children[0].children[0].textContent, "after-failed-refresh.mp4");
+  assert.equal(retry.hidden, true);
 });
 
 test("failed load-more keeps a retry action and succeeds on the next click", async () => {

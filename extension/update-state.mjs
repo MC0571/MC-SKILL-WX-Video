@@ -71,6 +71,11 @@ export function createUpdateStateManager({
     await chromeApi.action.setBadgeText({ text: available ? "更新" : "" });
   }
 
+  async function notifyStateChanged() {
+    try { await chromeApi.runtime.sendMessage({ type: UPDATE_STATE_CHANGED_TYPE }); }
+    catch { /* No extension page may be open. */ }
+  }
+
   function parseExtensionTag(tag) {
     if (typeof tag !== "string") return null;
     const version = tag.startsWith("extension-v") ? tag.slice("extension-v".length)
@@ -140,8 +145,7 @@ export function createUpdateStateManager({
       if (await getInstallSource(chromeApi, storeExtensionId) === "external") {
         await syncExternalBadge(latestRelease?.version ?? null);
       }
-      try { await chromeApi.runtime.sendMessage({ type: UPDATE_STATE_CHANGED_TYPE }); }
-      catch { /* No extension page may be open. */ }
+      await notifyStateChanged();
     })().finally(() => { releaseCheckPromise = undefined; });
     return releaseCheckPromise;
   }
@@ -194,6 +198,7 @@ export function createUpdateStateManager({
     if (await getInstallSource(chromeApi, storeExtensionId) !== "store" || !extensionReleaseUrl(version)) return;
     const stored = await readStoredState();
     await writeStoredState({ ...stored, availableVersion: version, applyRequested: false });
+    await notifyStateChanged();
     await chromeApi.action.setBadgeText({ text: "更新" });
   }
 

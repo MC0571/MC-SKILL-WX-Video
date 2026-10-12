@@ -963,6 +963,64 @@ test("legacy stable releases count only when they include the extension archive"
   assert.equal(state.releaseChangelogUrl, "https://github.com/MC0571/weixin-channels-video/releases/tag/v0.3.0");
 });
 
+test("store update notifies an already open page after persisting update state", async () => {
+  class Element {
+    constructor() { this.children = []; this.hidden = false; }
+    get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
+    append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
+    insertBefore(child, reference) {
+      child.parentNode = this;
+      this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, child);
+    }
+    setAttribute() {}
+    addEventListener() {}
+  }
+  const shell = new Element();
+  const header = new Element();
+  header.className = "page-header";
+  const inputCard = new Element();
+  inputCard.className = "input-card";
+  shell.append(header, inputCard);
+  const storage = new Map();
+  let onMessage;
+  let manager;
+  const chromeApi = {
+    management: { getSelf: async () => ({ id: STORE_EXTENSION_ID, installType: "normal" }) },
+    action: { setBadgeText: async () => {} },
+    runtime: {
+      getManifest: () => ({ version: "0.2.4" }),
+      async sendMessage(message) {
+        if (message.type === UPDATE_STATE_CHANGED_TYPE) {
+          assert.equal(storage.get(UPDATE_STORAGE_KEY)?.availableVersion, "0.2.5");
+          onMessage(message);
+          return;
+        }
+        if (message.type === UPDATE_STATE_TYPE) return manager.getState();
+      },
+      onMessage: { addListener(listener) { onMessage = listener; } },
+    },
+    storage: { local: {
+      async get(key) { return { [key]: storage.get(key) }; },
+      async set(values) { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+    } },
+  };
+  manager = createUpdateStateManager({ chromeApi });
+  const documentApi = {
+    querySelector(selector) { return selector === ".shell" ? shell : selector === ".input-card" ? inputCard : selector === ".page-header" ? header : null; },
+    createElement: () => new Element(),
+  };
+
+  initializeUpdateUi({ documentApi, chromeApi });
+  const card = shell.children[1];
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, true, "the open page initially has no available update");
+
+  await manager.updateAvailable("0.2.5");
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, false);
+  assert.equal(card.children[0].textContent, "已下载扩展更新 v0.2.5。");
+});
+
 test("external update notice is dismissible without clearing update state", async () => {
   class Element {
     constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; this.listeners = new Map(); }
