@@ -6,7 +6,7 @@ import test from "node:test";
 import { BridgeError } from "../skills/weixin-channels-video/scripts/bridge-client.mjs";
 import { diagnoseEnvironment, inspectChromeInstallation, inspectChromeRunning, launchChrome } from "../skills/weixin-channels-video/scripts/diagnostics.mjs";
 import { inspectChromeProfile } from "../skills/weixin-channels-video/scripts/chrome-profile.mjs";
-import { inspectBridgeComponents } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
+import { installBridge, inspectBridgeComponents } from "../skills/weixin-channels-video/scripts/bridge-install.mjs";
 import { runCli } from "../skills/weixin-channels-video/scripts/cli.mjs";
 
 const EXTENSION_ID = "a".repeat(32);
@@ -73,7 +73,7 @@ test("profile diagnostics read Chrome extension state without touching cookie fi
   });
 });
 
-test("profile diagnosis distinguishes missing, unreadable, and unconfigured profiles", async () => {
+test("profile diagnosis checks the directory without requiring Local State metadata", async () => {
   await withChromeProfile(async ({ userDataDir, profileDirectory }) => {
     assert.deepEqual(await inspectChromeProfile({ userDataDir, extensionId: EXTENSION_ID }), {
       state: "not_configured",
@@ -85,7 +85,7 @@ test("profile diagnosis distinguishes missing, unreadable, and unconfigured prof
     });
     await writeFile(join(userDataDir, "Local State"), "not json");
     assert.deepEqual(await inspectChromeProfile({ profileDirectory, userDataDir, extensionId: EXTENSION_ID }), {
-      state: "metadata_unreadable",
+      state: "exists",
       extension: "unknown",
     });
   });
@@ -104,10 +104,9 @@ test("diagnosis keeps unavailable evidence unknown and redacts local identifiers
     inspectRunning: () => "running",
     inspectProfile: async () => ({ state: "exists", extension: "recorded_unknown", profileName: "private profile name" }),
     inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", path: "/private/bridge" }),
-    bridgeWait: async (_config, received) => {
-      assert.deepEqual(received, sessionInfo);
-      throw new BridgeError("BRIDGE_SESSION_MISMATCH", "ignored");
-    },
+    readSelection: async () => null,
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+    bridgeRequest: async () => { throw new BridgeError("BRIDGE_SESSION_MISMATCH", "ignored"); },
   });
   assert.deepEqual(result, {
     configuration: "configured",
@@ -251,7 +250,7 @@ test("Windows Chrome launch passes long profile paths as argv without a shell", 
   await launchChrome(config, SESSION_ID, {
     platform: "win32",
     inspectChrome: () => ({ installation: "installed", compatibility: "supported", executable: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" }),
-    inspectProfile: async () => ({}),
+    inspectProfileDirectory: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }),
     processLauncher: async (executable, args) => {
       calls.push({ executable, args });
       return { status: 0 };
@@ -262,46 +261,52 @@ test("Windows Chrome launch passes long profile paths as argv without a shell", 
     args: [
       `--user-data-dir=${config.chromeUserDataDir}`,
       "--profile-directory=Profile 2",
-      `chrome-extension://${EXTENSION_ID}/index.html#agent-connect=${SESSION_ID}`,
+      "--no-startup-window",
     ],
   }]);
 });
 
-test("Chrome launch is backgrounded, uses the selected profile, and only adds the bootstrap URL when asked", async () => {
+test("macOS Chrome launch stays in the background and opens no bootstrap URL", async () => {
   await withChromeProfile(async ({ userDataDir, profileDirectory }) => {
     const config = { chromeUserDataDir: userDataDir, profileDirectory, extensionId: EXTENSION_ID };
     const calls = [];
-    const inspectChrome = () => ({ installation: "installed", compatibility: "supported", appPath: "/Applications/Google Chrome.app" });
-    const commandRunner = (path, args) => {
-      calls.push({ path, args });
-      return { status: 0, stdout: "" };
+    const inspectChrome = () => ({ installation: "installed", compatibility: "supported", appPath: "/Applications/Google Chrome.app", executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+    const processLauncher = async (executable, args) => {
+      calls.push({ executable, args });
+      return { status: 0 };
     };
-    await launchChrome(config, undefined, { platform: "darwin", inspectChrome, commandRunner });
-    assert.deepEqual(calls[0].args, [
-      "-g", "-n", "-a", "/Applications/Google Chrome.app", "--args",
-      `--user-data-dir=${userDataDir}`, `--profile-directory=${profileDirectory}`,
-    ]);
-    await launchChrome(config, SESSION_ID, { platform: "darwin", inspectChrome, commandRunner });
-    assert.equal(calls[1].args.at(-1), `chrome-extension://${EXTENSION_ID}/index.html#agent-connect=${SESSION_ID}`);
-    assert.equal(calls[1].args.includes("--headless"), false);
-    assert.equal(calls[1].args.some((argument) => argument.startsWith("--remote-debugging")), false);
+    await launchChrome(config, SESSION_ID, { platform: "darwin", inspectChrome, processLauncher, inspectProfile: async () => { throw new Error("metadata may be inaccessible"); } });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].executable, "/usr/bin/open");
+    assert.deepEqual(calls[0].args, ["-g", "-a", "/Applications/Google Chrome.app", "--args", `--user-data-dir=${userDataDir}`, `--profile-directory=${profileDirectory}`]);
+    assert.equal(calls[0].args.some((argument) => argument.startsWith("chrome-extension://")), false);
+    assert.equal(calls[0].args.includes("--headless"), false);
+    assert.equal(calls[0].args.some((argument) => argument.startsWith("--remote-debugging")), false);
   });
 });
 
-test("Chrome launch refuses to create a missing selected profile", async () => {
-  await withChromeProfile(async ({ userDataDir }) => {
-    const calls = [];
-    await assert.rejects(launchChrome({
-      chromeUserDataDir: userDataDir,
-      profileDirectory: "Profile 9",
-      extensionId: EXTENSION_ID,
-    }, undefined, {
-      platform: "darwin",
-      inspectChrome: () => ({ installation: "installed", compatibility: "supported", appPath: "/Applications/Google Chrome.app" }),
-      commandRunner: (...args) => { calls.push(args); return { status: 0, stdout: "" }; },
-    }), { code: "CHROME_PROFILE_UNAVAILABLE" });
-    assert.equal(calls.length, 0);
-  });
+test("Chrome launch refuses missing, non-directory, and symbolic-link profiles", async () => {
+  const launches = [];
+  const config = { chromeUserDataDir: "/Users/test/Chrome User Data", profileDirectory: "Profile 2", extensionId: EXTENSION_ID };
+  const dependencies = {
+    platform: "darwin",
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported", executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }),
+    processLauncher: async (...args) => { launches.push(args); return { status: 0 }; },
+  };
+  await assert.rejects(launchChrome(config, SESSION_ID, {
+    ...dependencies,
+    inspectProfileDirectory: async () => { throw Object.assign(new Error(), { code: "ENOENT" }); },
+  }), { code: "CHROME_PROFILE_UNAVAILABLE" });
+  await assert.rejects(launchChrome(config, SESSION_ID, {
+    ...dependencies,
+    inspectProfileDirectory: async () => ({ isDirectory: () => false, isSymbolicLink: () => false }),
+  }), { code: "CHROME_PROFILE_UNAVAILABLE" });
+  await assert.rejects(launchChrome(config, SESSION_ID, {
+    ...dependencies,
+    inspectProfileDirectory: async () => ({ isDirectory: () => true, isSymbolicLink: () => true }),
+  }), { code: "CHROME_PROFILE_UNAVAILABLE" });
+  await assert.rejects(launchChrome({ ...config, profileDirectory: "" }, SESSION_ID, dependencies), { code: "CHROME_PROFILE_UNAVAILABLE" });
+  assert.equal(launches.length, 0);
 });
 
 test("Chrome launch reports unsupported platforms without reading configuration or launching an app", async () => {
@@ -309,8 +314,7 @@ test("Chrome launch reports unsupported platforms without reading configuration 
   await assert.rejects(launchChrome({}, undefined, {
     platform: "linux",
     inspectChrome: () => { calls.push("inspectChrome"); throw new Error("must not inspect"); },
-    inspectProfile: () => { calls.push("inspectProfile"); throw new Error("must not inspect"); },
-    commandRunner: () => { calls.push("commandRunner"); return { status: 0, stdout: "" }; },
+    processLauncher: () => { calls.push("processLauncher"); return { status: 0 }; },
   }), { code: "CHROME_UNAVAILABLE" });
   assert.deepEqual(calls, []);
 });
@@ -325,10 +329,146 @@ test("diagnosis preserves native connection failures", async () => {
     inspectRunning: () => "running",
     inspectProfile: async () => ({ state: "exists", extension: "enabled" }),
     inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available" }),
-    bridgeWait: async () => { throw new BridgeError("BRIDGE_CONNECTION_FAILED", "ignored"); },
+    readSelection: async () => null,
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+    bridgeRequest: async () => { throw new BridgeError("BRIDGE_CONNECTION_FAILED", "ignored"); },
   });
   assert.equal(result.connection.state, "connection_failed");
   assert.deepEqual(result.actions, ["restore_connection_before_next_task"]);
+});
+
+test("an authenticated bridge stays connected without metadata-based recovery actions", async () => {
+  const result = await diagnoseEnvironment({
+    configuration: "configured",
+    config: { profileDirectory: "Profile 2", chromeUserDataDir: "/private/Chrome User Data", extensionId: EXTENSION_ID },
+    sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+  }, {
+    inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
+    inspectProfile: async () => ({ state: "unknown", extension: "unknown" }),
+    inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "unknown" }),
+    readSelection: async () => null,
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+    bridgeRequest: async () => ({ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2, login: "authenticated", checkedAt: 100, versions: {} }),
+  });
+  assert.deepEqual(result.connection, { state: "connected", instanceId: "423e4567-e89b-42d3-a456-426614174000", login: "authenticated", checkedAt: 100 });
+  assert.deepEqual(result.actions, []);
+  assert.equal(result.nextAction, undefined);
+});
+
+test("profile-less diagnosis reports bridge repairs without suggesting legacy pairing", async () => {
+  const base = { registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" };
+  const cases = [
+    [{ registration: "missing" }, "repair_bridge_if_authorized"],
+    [{ host: "missing" }, "repair_bridge_if_authorized"],
+    [{ security: "invalid" }, "repair_bridge_if_authorized"],
+    [{ node: "missing" }, "register_bridge_with_a_supported_node"],
+    [{ session: "missing" }, "repair_bridge_registration"],
+    [{ session: "invalid" }, "repair_bridge_registration"],
+    [{}, "open_chrome_and_enable_extension"],
+  ];
+  for (const [override, expected] of cases) {
+    const result = await diagnoseEnvironment({
+      configuration: "configured",
+      config: { extensionId: EXTENSION_ID, appSupportDir: "/private/bridge" },
+      sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+    }, {
+      inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
+      inspectBridge: async () => ({ ...base, ...override }),
+      readConnections: async () => [],
+    });
+    assert.equal(result.nextAction, expected, JSON.stringify(override));
+    assert.equal(result.actions.some((action) => action.includes("pairing")), false);
+  }
+  const windowsUnknownSecurity = await diagnoseEnvironment({
+    configuration: "configured",
+    config: { extensionId: EXTENSION_ID, appSupportDir: "C:\\private\\bridge" },
+  }, {
+    platform: "win32",
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({ ...base, security: "unknown" }),
+  });
+  assert.equal(windowsUnknownSecurity.nextAction, "inspect_chrome_extension_and_bridge_manually");
+});
+
+test("diagnosis shares live instance selection and reports ambiguity, offline selection, and legacy protocol", async () => {
+  const first = "423e4567-e89b-42d3-a456-426614174000";
+  const second = "523e4567-e89b-42d3-a456-426614174000";
+  const base = {
+    configuration: "configured",
+    config: { extensionId: EXTENSION_ID, appSupportDir: "/private/bridge" },
+    sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+  };
+  const dependencies = {
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" }),
+  };
+  const ambiguous = await diagnoseEnvironment(base, {
+    ...dependencies,
+    readConnections: async () => [{ instanceId: first, nativeProtocol: 2 }, { instanceId: second, nativeProtocol: 2 }],
+    bridgeRequest: async (_config, _session, request, options) => ({
+      instanceId: options.instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {},
+    }),
+  });
+  assert.equal(ambiguous.connection.state, "profile_ambiguous");
+  assert.equal(ambiguous.nextAction, "connect_to_one_chrome_profile");
+
+  const offline = await diagnoseEnvironment(base, {
+    ...dependencies,
+    readSelection: async () => first,
+    readConnections: async () => [],
+  });
+  assert.deepEqual(offline.connection, { state: "selected_offline", instanceId: first });
+  assert.equal(offline.nextAction, "restore_selected_chrome_connection");
+
+  const legacy = await diagnoseEnvironment(base, {
+    ...dependencies,
+    readConnections: async () => [{ instanceId: "00000000-0000-4000-8000-000000000000", nativeProtocol: 1 }],
+    waitForLegacyBridge: async () => {},
+  });
+  assert.equal(legacy.connection.state, "protocol_unsupported");
+  assert.equal(legacy.nextAction, "update_extension_and_skill");
+
+  const currentUnprofiled = await diagnoseEnvironment(base, {
+    ...dependencies,
+    readConnections: async () => [{ instanceId: first, nativeProtocol: 2 }],
+    bridgeRequest: async () => ({ instanceId: first, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {} }),
+  });
+  assert.equal(currentUnprofiled.connection.state, "connected");
+  assert.deepEqual(currentUnprofiled.actions, []);
+});
+
+test("macOS diagnosis tolerates unknown Windows-only security without obsolete pairing advice", { skip: process.platform !== "darwin" }, async () => {
+  await withChromeProfile(async ({ root, userDataDir }) => {
+    const appSupportDir = join(root, "bridge");
+    const registryDir = join(root, "NativeMessagingHosts");
+    const nativeHostSource = join(root, "native-host.mjs");
+    await writeFile(nativeHostSource, "// test native host\n");
+    const installed = await installBridge({
+      extensionId: EXTENSION_ID,
+      appSupportDir,
+      chromeUserDataDir: userDataDir,
+      registryDir,
+      nodeExecutable: process.execPath,
+      nativeHostSource,
+      platform: "darwin",
+    });
+    const bridge = await inspectBridgeComponents(installed.config, { registryDir });
+    assert.deepEqual(bridge, {
+      registration: "valid",
+      host: "present",
+      launcher: "valid",
+      node: "available",
+      nodeVersion: process.versions.node,
+      session: "available",
+      security: "unknown",
+    });
+    const result = await diagnoseEnvironment({ configuration: "configured", config: installed.config }, {
+      platform: "darwin",
+      inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+      inspectBridge: (config) => inspectBridgeComponents(config, { registryDir }),
+    });
+    assert.equal(result.nextAction, "inspect_chrome_extension_and_bridge_manually");
+  });
 });
 
 test("diagnosis recommends bridge repair when Windows private-path security is invalid", async () => {
@@ -423,7 +563,6 @@ test("candidate diagnosis checks recorded profile state only and emits one next 
     await writeFile(join(profile, "Secure Preferences"), JSON.stringify({
       extensions: { settings: { [EXTENSION_ID]: { state: 1 } } },
     }));
-    let bridgeWaitCalls = 0;
     const result = await diagnoseEnvironment({
       configuration: "unconfigured",
       candidate: { profile: profileDirectory, extensionId: EXTENSION_ID },
@@ -432,7 +571,7 @@ test("candidate diagnosis checks recorded profile state only and emits one next 
       chromeUserDataDir: userDataDir,
       inspectChrome: () => ({ installation: "installed", version: "154.0.0.0", compatibility: "supported" }),
       inspectRunning: () => "unknown",
-      bridgeWait: async () => { bridgeWaitCalls += 1; },
+      bridgeRequest: async () => assert.fail("metadata candidate diagnosis must not probe a live bridge"),
     });
     assert.deepEqual(result.candidate, {
       checkScope: "chrome_profile_metadata",
@@ -445,7 +584,6 @@ test("candidate diagnosis checks recorded profile state only and emits one next 
     });
     assert.equal(result.nextAction, "install_bridge_with_selected_profile");
     assert.equal(result.actions.includes("configure_bridge_and_select_profile"), false);
-    assert.equal(bridgeWaitCalls, 0);
     const serialized = JSON.stringify(result.candidate);
     assert.equal(serialized.includes(EXTENSION_ID), false);
     assert.equal(serialized.includes(profileDirectory), false);
@@ -468,4 +606,147 @@ test("candidate diagnose CLI validates the pair and does not read installed conf
   assert.deepEqual(JSON.parse(output[0]), { candidate: { nextAction: "install_bridge_with_selected_profile" } });
 
   assert.equal(await runCli(["diagnose", "--profile", "Profile 2"], { stderr: () => {} }), 2);
+});
+
+test("install-bridge accepts manual pairing and pairing-info emits only the session identifier", async () => {
+  const output = [];
+  let installOptions;
+  const config = { extensionId: EXTENSION_ID, profileDirectory: "Profile 2" };
+  const sessionInfo = { sessionId: SESSION_ID, ipcSecret: IPC_SECRET };
+  assert.equal(await runCli(["install-bridge", "--extension-id", EXTENSION_ID], {
+    stdout: (value) => output.push(value),
+    install: async (value) => { installOptions = value; return { profile: null, config }; },
+  }), 0);
+  assert.deepEqual(installOptions, { extensionId: EXTENSION_ID, profile: undefined });
+  assert.deepEqual(JSON.parse(output.pop()), { installed: true, profile: null, extensionId: EXTENSION_ID, versions: { cli: "unknown", host: "unknown", extension: "unknown" } });
+  assert.equal(await runCli(["pairing-info"], {
+    stdout: (value) => output.push(value),
+    readInstallation: async () => config,
+    readSession: async () => sessionInfo,
+  }), 0);
+  assert.deepEqual(JSON.parse(output[0]), { sessionId: SESSION_ID });
+  assert.equal(output[0].includes(IPC_SECRET), false);
+  assert.equal(output[0].includes("chrome-extension://"), false);
+});
+
+test("connect launches only the selected profile and returns after its record appears", async () => {
+  const output = [];
+  let launches = 0;
+  let reads = 0;
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const config = { extensionId: EXTENSION_ID, profileDirectory: "Profile 2" };
+  assert.equal(await runCli(["connect"], {
+    stdout: (value) => output.push(value),
+    readInstallation: async () => config,
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    readSelection: async () => null,
+    readConnections: async () => ++reads === 1 ? [] : [{ instanceId, nativeProtocol: 2 }],
+    inspectRunning: () => "not_running",
+    launch: async () => { launches += 1; },
+    sleep: async () => {},
+    connectionWaitMs: 100,
+    bridgeRequest: async (_config, _session, request, options) => ({
+      instanceId: options.instanceId, nativeProtocol: 2, login: "authenticated", checkedAt: 1, versions: {},
+    }),
+  }), 0);
+  assert.equal(launches, 1);
+  assert.ok(reads >= 2);
+  assert.equal(output[0], "Connected to the Chrome extension.");
+});
+
+test("failed Chrome launch reports a safe start error", async () => {
+  const errors = [];
+  let launches = 0;
+  const code = await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID, profileDirectory: "Profile 2" }),
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    readSelection: async () => null,
+    readConnections: async () => [],
+    inspectRunning: () => "not_running",
+    launch: async () => { launches += 1; throw new BridgeError("CHROME_START_FAILED", "private launch detail"); },
+  });
+  assert.equal(code, 1);
+  assert.equal(launches, 1);
+  assert.match(errors[0], /CHROME_START_FAILED/);
+  assert.equal(errors[0].includes("private launch detail"), false);
+});
+
+test("profile-less connect launches Chrome once when stopped and never relaunches a running instance", async () => {
+  const errors = [];
+  let launches = 0;
+  const code = await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => ({ extensionId: EXTENSION_ID }),
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    readSelection: async () => null,
+    readConnections: async () => [],
+    inspectRunning: () => "not_running",
+    launch: async () => { launches += 1; },
+    connectionWaitMs: 0,
+  });
+  assert.equal(code, 1);
+  assert.equal(launches, 1);
+  assert.match(errors[0], /日常使用的 Chrome/);
+  assert.equal(errors[0].includes("install-bridge --profile"), false);
+
+  launches = 0;
+  assert.equal(await runCli(["connect"], {
+    stderr: () => {},
+    readInstallation: async () => ({ extensionId: EXTENSION_ID }),
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    readSelection: async () => null,
+    readConnections: async () => [],
+    inspectRunning: () => "running",
+    launch: async () => { launches += 1; },
+    connectionWaitMs: 0,
+  }), 1);
+  assert.equal(launches, 0);
+});
+
+test("CLI passes the same legacy probe to diagnostics and connection discovery", async () => {
+  let received;
+  let probes = 0;
+  const waitForLegacyBridge = async () => { probes += 1; };
+  const config = { extensionId: EXTENSION_ID };
+  assert.equal(await runCli(["diagnose"], {
+    stdout: () => {},
+    readInstallation: async () => config,
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    waitForLegacyBridge,
+    diagnose: async (_request, dependencies) => { received = dependencies.waitForLegacyBridge; return {}; },
+  }), 0);
+  assert.equal(received, waitForLegacyBridge);
+
+  const errors = [];
+  assert.equal(await runCli(["connections"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => config,
+    readSession: async () => ({ sessionId: SESSION_ID }),
+    readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 1 }],
+    waitForLegacyBridge,
+  }), 1);
+  assert.equal(probes, 1);
+  assert.match(errors[0], /BRIDGE_PROTOCOL_UNSUPPORTED/);
+});
+
+test("missing local session registration gives repair guidance instead of an unavailable pairing code", async () => {
+  const errors = [];
+  const config = { profileDirectory: "Profile 2", extensionId: EXTENSION_ID };
+  assert.equal(await runCli(["pairing-info"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => config,
+    readSession: async () => null,
+  }), 1);
+  assert.match(errors[0], /重新运行 install-bridge/);
+  assert.equal(errors[0].includes("pairing-info 获取"), false);
+
+  errors.length = 0;
+  assert.equal(await runCli(["connect"], {
+    stderr: (value) => errors.push(value),
+    readInstallation: async () => config,
+    readSession: async () => null,
+  }), 1);
+  assert.match(errors[0], /修复桥接注册/);
+  assert.equal(errors[0].includes("pairing-info"), false);
 });

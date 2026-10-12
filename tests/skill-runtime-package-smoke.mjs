@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertWindowsPrivatePath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
@@ -36,21 +36,20 @@ try {
   if (process.platform === "win32") await mkdir(env.LOCALAPPDATA);
   const first = prepare();
   assert.equal(first.minimumNodeVersion, "22.22.2");
-  assert.equal(first.runtimeProtocol, 2);
-  assert.ok(isAbsolute(first.extensionAssets));
-  assert.ok(existsSync(join(first.extensionAssets, "manifest.json")));
-
-  const cacheRoot = dirname(first.extensionAssets);
+  assert.equal(first.runtimeProtocol, 3);
+  assert.deepEqual(Object.keys(first).sort(), ["minimumNodeVersion", "runtimeCLI", "runtimeProtocol", "version"]);
+  const cacheRoot = dirname(dirname(dirname(first.runtimeCLI)));
   if (process.platform === "win32") {
     await assertWindowsPrivatePath(join(cacheRoot, "current.json"));
-    await assertPrivateTree(first.extensionAssets);
   }
   const marker = JSON.parse(await readFile(join(cacheRoot, "current.json"), "utf8"));
+  assert.deepEqual(Object.keys(marker).sort(), ["runtimeProtocol", "version"]);
   const cachedRuntime = join(cacheRoot, marker.version);
   if (process.platform === "win32") await assertPrivateTree(cachedRuntime);
   assert.ok(existsSync(join(cachedRuntime, "runtime.json")));
   assert.ok(existsSync(join(cachedRuntime, "scripts", "cli.mjs")));
   assert.ok(existsSync(join(cachedRuntime, "scripts", "native-host.mjs")));
+  assert.equal(existsSync(join(cachedRuntime, "assets")), false);
   const preservedFile = join(cachedRuntime, "existing-cache-data");
   await writeFile(preservedFile, "keep");
 
@@ -59,7 +58,7 @@ try {
   assert.match(sourceCommand.stdout, /^Usage: cli\.mjs/m);
 
   const second = prepare();
-  assert.equal(second.extensionAssets, first.extensionAssets);
+  assert.equal(second.runtimeCLI, first.runtimeCLI);
   assert.equal(await readFile(preservedFile, "utf8"), "keep");
 } finally {
   await rm(tempRoot, { recursive: true, force: true });

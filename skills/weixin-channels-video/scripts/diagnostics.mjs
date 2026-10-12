@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, win32 } from "node:path";
 import { BRIDGE_ERROR_MESSAGES, SESSION_ID_PATTERN } from "../../../src/native-messaging.mjs";
 import { windowsPowerShellBuiltinModuleImport, windowsPowerShellPath } from "./windows-security.mjs";
-import { BridgeError, waitForBridge } from "./bridge-client.mjs";
-import { inspectBridgeComponents } from "./bridge-install.mjs";
+import { BridgeError, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
+import { inspectBridgeComponents, readBridgeConnections, readBridgeSelection } from "./bridge-install.mjs";
 import { MIN_NODE_VERSION, RUNTIME_PROTOCOL } from "./runtime-support.mjs";
 import { defaultChromeUserDataDir, inspectChromeProfile, selectChromeProfile } from "./chrome-profile.mjs";
 
@@ -166,11 +166,10 @@ function launchDetached(executable, args) {
   });
 }
 
-export async function launchChrome(config, sessionId, {
+export async function launchChrome(config, _sessionId, {
   platform = process.platform,
   inspectChrome = () => inspectChromeInstallation({ platform }),
-  inspectProfile = selectChromeProfile,
-  commandRunner = command,
+  inspectProfileDirectory = lstat,
   processLauncher = launchDetached,
 } = {}) {
   if (platform !== "darwin" && platform !== "win32") {
@@ -180,30 +179,46 @@ export async function launchChrome(config, sessionId, {
   if (chrome.installation === "not_installed") {
     throw new BridgeError("CHROME_NOT_INSTALLED", "Google Chrome is not installed.");
   }
-  if (chrome.installation !== "installed" || !(chrome.appPath || (platform === "win32" && chrome.executable))) {
+  if (chrome.installation !== "installed" || !chrome.executable) {
     throw new BridgeError("CHROME_START_FAILED", BRIDGE_ERROR_MESSAGES.CHROME_START_FAILED);
   }
   if (chrome.compatibility === "too_old") {
     throw new BridgeError("CHROME_VERSION_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.CHROME_VERSION_UNSUPPORTED);
   }
-  try {
-    await inspectProfile(config.profileDirectory, config.chromeUserDataDir);
-  } catch {
-    throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+  const args = [];
+  if (config?.chromeUserDataDir) {
+    if (!(platform === "win32" ? win32.isAbsolute(config.chromeUserDataDir) : isAbsolute(config.chromeUserDataDir))) {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    args.push(`--user-data-dir=${config.chromeUserDataDir}`);
   }
-  const args = platform === "win32"
-    ? [`--user-data-dir=${config.chromeUserDataDir}`, `--profile-directory=${config.profileDirectory}`]
-    : ["-g", "-n", "-a", chrome.appPath, "--args", `--user-data-dir=${config.chromeUserDataDir}`, `--profile-directory=${config.profileDirectory}`];
-  if (sessionId) args.push(`chrome-extension://${config.extensionId}/index.html#agent-connect=${sessionId}`);
-  const result = platform === "win32"
-    ? await processLauncher(chrome.executable ?? chrome.appPath, args)
-    : commandRunner("/usr/bin/open", args);
+  if (config?.profileDirectory !== undefined) {
+    const profileDirectory = config.profileDirectory;
+    if (typeof profileDirectory !== "string" || !profileDirectory || profileDirectory === "." || profileDirectory === ".." ||
+        isAbsolute(profileDirectory) || profileDirectory.includes("/") || profileDirectory.includes("\\")) {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    try {
+      const profile = await inspectProfileDirectory(join(config.chromeUserDataDir, profileDirectory));
+      if (!profile.isDirectory() || profile.isSymbolicLink()) throw new Error();
+    } catch {
+      throw new BridgeError("CHROME_PROFILE_UNAVAILABLE", BRIDGE_ERROR_MESSAGES.CHROME_PROFILE_UNAVAILABLE);
+    }
+    args.push(`--profile-directory=${profileDirectory}`);
+  }
+  if (platform === "win32") args.push("--no-startup-window");
+  const executable = platform === "darwin" ? "/usr/bin/open" : chrome.executable;
+  const launchArgs = platform === "darwin"
+    ? ["-g", "-a", chrome.appPath, ...(args.length ? ["--args", ...args] : [])]
+    : args;
+  const result = await processLauncher(executable, launchArgs);
   if (result.status !== 0 || result.error) {
     throw new BridgeError("CHROME_START_FAILED", BRIDGE_ERROR_MESSAGES.CHROME_START_FAILED);
   }
 }
 
-function nextActions({ chrome, profile, extension, bridge, connection, configuration, candidateAction }) {
+function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, platform, candidateAction }) {
+  if (connection.state === "connected") return [];
   const actions = [];
   if (chrome.installation === "not_installed") actions.push("install_chrome_after_user_approval");
   else if (chrome.compatibility === "too_old") actions.push("upgrade_chrome");
@@ -221,11 +236,22 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
   if (bridge.security === "invalid" || ["missing", "invalid"].some((state) => [bridge.registration, bridge.host, bridge.launcher].includes(state))) {
     actions.push("repair_bridge_if_authorized");
   }
-  if (bridge.session === "missing" || bridge.session === "invalid") actions.push("repair_extension_pairing_after_user_approval");
+  if (bridge.session === "missing") actions.push("repair_bridge_registration");
+  else if (bridge.session === "invalid") actions.push("repair_bridge_registration");
+  if (configuration === "configured" && !config?.profileDirectory) {
+    if (actions.length) return [...new Set(actions)];
+    if (connection.state === "profile_ambiguous") return ["connect_to_one_chrome_profile"];
+    if (connection.state === "selected_offline") return ["restore_selected_chrome_connection"];
+    if (connection.state === "protocol_unsupported") return ["update_extension_and_skill"];
+    if (connection.state === "disconnected") return ["open_chrome_and_enable_extension"];
+    return ["inspect_chrome_extension_and_bridge_manually"];
+  }
   if (connection.state === "session_mismatch") actions.push("repair_bridge_session_mismatch");
+  else if (connection.state === "profile_ambiguous") actions.push("connect_to_one_chrome_profile");
+  else if (connection.state === "selected_offline") actions.push("restore_selected_chrome_connection");
+  else if (connection.state === "protocol_unsupported") actions.push("update_extension_and_skill");
   else if (["connection_failed", "disconnected", "timeout"].includes(connection.state)) actions.push("restore_connection_before_next_task");
   if (configuration !== "configured" && !actions.length) actions.push("configure_bridge_and_select_profile");
-  if (!actions.length && connection.state === "connected") actions.push("check_login_with_status");
   if (!actions.length) actions.push("inspect_chrome_extension_and_bridge_manually");
   return [...new Set(actions)];
 }
@@ -321,7 +347,10 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
   inspectProfile = inspectChromeProfile,
   selectCandidateProfile = selectChromeProfile,
   inspectBridge = inspectBridgeComponents,
-  bridgeWait = waitForBridge,
+  readConnections = readBridgeConnections,
+  readSelection = readBridgeSelection,
+  bridgeRequest = requestBridge,
+  waitForLegacyBridge = waitForBridge,
   includeRuntime = false,
 } = {}) {
   let chromeInfo = { installation: "unknown", version: null, compatibility: "unknown" };
@@ -347,17 +376,33 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
       connection = { state: "session_mismatch" };
     } else if (SESSION_ID_PATTERN.test(bridgeSession?.sessionId ?? bridgeSession ?? "")) {
       try {
-        await bridgeWait(config, bridgeSession, { timeoutMs: 500 });
-        connection = { state: "connected" };
+        const selected = await selectBridgeConnection(config, bridgeSession, {
+          readConnections,
+          readSelection,
+          request: bridgeRequest,
+          waitForLegacyBridge,
+        });
+        if (selected.connection) {
+          connection = {
+            state: "connected",
+            instanceId: selected.connection.instanceId,
+            login: selected.connection.login,
+            checkedAt: selected.connection.checkedAt,
+          };
+        } else if (selected.selectedInstanceId) {
+          connection = { state: "selected_offline", instanceId: selected.selectedInstanceId };
+        } else {
+          connection = { state: "disconnected" };
+        }
       } catch (error) {
         const code = error instanceof BridgeError ? error.code : "";
-        connection = {
-          state: code === "BRIDGE_SESSION_MISMATCH" ? "session_mismatch"
-            : code === "BRIDGE_TIMEOUT" ? "timeout"
-              : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
-                : code === "BRIDGE_DISCONNECTED" ? "disconnected"
-                  : "unknown",
-        };
+        connection = { state: code === "BRIDGE_SESSION_MISMATCH" ? "session_mismatch"
+          : code === "BRIDGE_PROFILE_AMBIGUOUS" ? "profile_ambiguous"
+            : code === "BRIDGE_PROTOCOL_UNSUPPORTED" ? "protocol_unsupported"
+              : code === "BRIDGE_TIMEOUT" ? "timeout"
+                : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
+                  : code === "BRIDGE_DISCONNECTED" ? "disconnected"
+                    : "unknown" };
       }
     }
   }
@@ -404,6 +449,8 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
   result.actions = nextActions({
     ...result,
     configuration: result.configuration,
+    config,
+    platform,
     candidateAction: result.candidate?.nextAction,
   });
   result.nextAction = result.actions[0];

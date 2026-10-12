@@ -112,7 +112,7 @@ async function createFixture(root) {
   return { appSupportDir, configPath, config, sessionInfo, socketPath: bridgeSocketPath(config, sessionId) };
 }
 
-async function readyNativeHostProcess(fixture) {
+async function readyNativeHostProcess(fixture, { version = 1, instanceId } = {}) {
   const child = spawn(process.execPath, [
     hostScript,
     fixture.configPath,
@@ -122,9 +122,11 @@ async function readyNativeHostProcess(fixture) {
   const frames = createFrameReader(child.stdout);
   child.stderr.on("data", () => {});
   const ready = frames.next();
-  child.stdin.write(Buffer.from(encodeBridgeFrame({ type: "hello", version: 1, sessionId })));
-  assert.deepEqual(await ready, { type: "ready", version: 1 });
-  return { child, frames };
+  child.stdin.write(Buffer.from(encodeBridgeFrame(version === 2
+    ? { type: "hello", version: 2, instanceId }
+    : { type: "hello", version: 1, sessionId })));
+  assert.deepEqual(await ready, version === 2 ? { type: "ready", version: 2, instanceId } : { type: "ready", version: 1 });
+  return { child, frames, socketPath: bridgeSocketPath(fixture.config, sessionId, version === 2 ? instanceId : undefined) };
 }
 
 async function occupyPipe(socketPath) {
@@ -185,14 +187,44 @@ async function expectPipeClientClosed(socket) {
   await waitForEvent(socket, "close", 8_000);
 }
 
-async function requestThroughNativeHost(fixture, input, frames) {
+async function requestThroughNativeHost(fixture, input, frames, instanceId) {
   const id = randomUUID();
   const request = { id, command: "status" };
-  const responsePromise = requestBridge(fixture.config, fixture.sessionInfo, request, { timeoutMs: 20_000 });
+  const responsePromise = requestBridge(fixture.config, fixture.sessionInfo, request, { timeoutMs: 20_000, instanceId });
   const nativeRequest = await frames.next(20_000);
   assert.deepEqual(nativeRequest, request);
-  input.write(Buffer.from(encodeBridgeFrame({ id, ok: true, result: { login: "anonymous" } })));
-  assert.deepEqual(await responsePromise, { login: "anonymous" });
+  input.write(Buffer.from(encodeBridgeFrame({ id, ok: true, result: {
+    ...(instanceId ? { instanceId, nativeProtocol: 2 } : {}),
+    login: "anonymous",
+  } })));
+  assert.deepEqual(await responsePromise, {
+    ...(instanceId ? { instanceId, nativeProtocol: 2 } : {}),
+    login: "anonymous",
+    versions: { host: "unknown" },
+  });
+}
+
+async function smokeVersionedPipeEndpoints(fixture) {
+  const legacy = await readyNativeHostProcess(fixture);
+  try {
+    assert.equal(legacy.socketPath, fixture.socketPath);
+    await requestThroughNativeHost(fixture, legacy.child.stdin, legacy.frames);
+  } finally {
+    const closed = waitForEvent(legacy.child, "close", 10_000);
+    legacy.child.kill();
+    await closed;
+  }
+
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const current = await readyNativeHostProcess(fixture, { version: 2, instanceId });
+  try {
+    assert.notEqual(current.socketPath, fixture.socketPath);
+    await requestThroughNativeHost(fixture, current.child.stdin, current.frames, instanceId);
+  } finally {
+    const closed = waitForEvent(current.child, "close", 10_000);
+    current.child.kill();
+    await closed;
+  }
 }
 
 async function smokeLiveHostTimeoutRecovery(fixture, partial) {
@@ -329,6 +361,8 @@ async function main() {
 
     failureStage = "fixture";
     const fixture = await createFixture(root);
+    failureStage = "versioned-pipe-endpoints";
+    await smokeVersionedPipeEndpoints(fixture);
     failureStage = "pipe-preemption";
     await smokePipePreemption(fixture);
     failureStage = "live-timeout-empty-client";

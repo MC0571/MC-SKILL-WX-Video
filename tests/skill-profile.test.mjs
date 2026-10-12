@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultChromeUserDataDir, listChromeProfiles, selectChromeProfile } from '../skills/weixin-channels-video/scripts/chrome-profile.mjs';
+import { defaultChromeUserDataDir, inspectChromeProfile, listChromeProfiles, selectChromeProfile } from '../skills/weixin-channels-video/scripts/chrome-profile.mjs';
 
 async function fixture(run) {
   const root = await mkdtemp(join(tmpdir(), 'weixin-profile-test-'));
@@ -48,4 +48,20 @@ test('default Chrome profile paths follow each supported platform', () => {
     platform: 'win32',
     env: { LOCALAPPDATA: 'C:\\Users\\example\\AppData\\Local' },
   }), 'C:\\Users\\example\\AppData\\Local\\Google\\Chrome\\User Data');
+});
+
+test('an explicit profile directory works without Local State or Preferences metadata', async () => {
+  await fixture(async (root) => {
+    await mkdir(join(root, 'Profile 7'));
+    assert.deepEqual(await selectChromeProfile('Profile 7', root), {
+      directory: 'Profile 7',
+      name: 'Profile 7',
+      profileDirectory: join(root, 'Profile 7'),
+    });
+    assert.deepEqual(await inspectChromeProfile({
+      profileDirectory: 'Profile 7',
+      userDataDir: root,
+      extensionId: 'a'.repeat(32),
+    }), { state: 'exists', extension: 'unknown' });
+  });
 });

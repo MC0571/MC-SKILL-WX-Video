@@ -21,24 +21,27 @@ async function assertPrivateTree(path) {
   }
 }
 
-function makeRelease(version, runtimeProtocol = 2, corruptChecksum = false) {
+function makeRelease(version, runtimeProtocol = 3, corruptChecksum = false) {
   const archiveName = 'weixin-channels-video-skill-v' + version + '.tar.gz';
   const skillZipName = 'weixin-channels-video-skill-v' + version + '.zip';
-  const extensionZipName = 'weixin-channels-video-extension-v' + version + '.zip';
   const baseUrl = 'https://github.com/MC0571/weixin-channels-video/releases/download/v' + version;
   const archive = skillArchive([
     ['weixin-channels-video', '', '5'],
     ['weixin-channels-video/assets', '', '5'],
     ['weixin-channels-video/assets/extension', '', '5'],
+    ['weixin-channels-video/references', '', '5'],
     ['weixin-channels-video/scripts', '', '5'],
+    ['weixin-channels-video/SKILL.md', 'Skill installation instructions'],
+    ['weixin-channels-video/assets/extension/manifest.json', JSON.stringify({ version })],
+    ['weixin-channels-video/references/agent-installation.md', 'Agent installation guide'],
     ['weixin-channels-video/runtime.json', JSON.stringify({
       version,
       runtimeProtocol,
       minimumNodeVersion: '22.22.2',
     })],
+    ['weixin-channels-video/scripts/run.mjs', 'export {};'],
     ['weixin-channels-video/scripts/cli.mjs', 'export {};'],
     ['weixin-channels-video/scripts/native-host.mjs', 'export {};'],
-    ['weixin-channels-video/assets/extension/manifest.json', JSON.stringify({ version })],
   ]);
   const hash = corruptChecksum
     ? '0'.repeat(64)
@@ -57,7 +60,6 @@ function makeRelease(version, runtimeProtocol = 2, corruptChecksum = false) {
     assets: [
       makeAsset(archiveName, archive, 'application/gzip'),
       makeAsset(skillZipName, Buffer.from('zip'), 'application/zip'),
-      makeAsset(extensionZipName, Buffer.from('zip'), 'application/zip'),
       makeAsset('SHA256SUMS', checksums, 'text/plain'),
     ],
   };
@@ -74,7 +76,7 @@ function response(body, contentType) {
   });
 }
 
-test('Release preparation migrates legacy assets and rolls back checksum, protocol, and marker-write failures', {
+test('Release preparation leaves legacy extension files untouched and commits only protocol-3 runtime state', {
   skip: !supportedPlatform,
 }, async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'skill-runtime-transaction-'));
@@ -105,7 +107,8 @@ test('Release preparation migrates legacy assets and rolls back checksum, protoc
     } else {
       await mkdir(oldExtension, { recursive: true });
     }
-    await writeFile(oldManifest, JSON.stringify({ version: '0.1.1' }), { flag: 'wx' });
+    const oldManifestBytes = Buffer.from(JSON.stringify({ version: '0.1.1', marker: 'preserve' }));
+    await writeFile(oldManifest, oldManifestBytes, { flag: 'wx' });
     await writeFile(legacyMarker, JSON.stringify({
       version: '0.1.1',
       runtimeProtocol: 1,
@@ -148,17 +151,25 @@ test('Release preparation migrates legacy assets and rolls back checksum, protoc
     async function assertCommitted(version, markerText) {
       assert.equal(await readFile(join(cacheRoot, version, 'runtime.json'), 'utf8').then((text) => JSON.parse(text).version), version);
       assert.equal(await readFile(join(cacheRoot, 'current.json'), 'utf8'), markerText);
-      assert.equal(await readFile(join(oldExtension, 'manifest.json'), 'utf8').then((text) => JSON.parse(text).version), version);
+      assert.deepEqual(await readFile(oldManifest), oldManifestBytes);
     }
 
     const prepared = await prepare();
     assert.equal(prepared.version, '0.2.0');
-    assert.equal(prepared.extensionAssets, oldExtension);
+    assert.equal(prepared.runtimeProtocol, 3);
+    assert.equal('extensionAssets' in prepared, false);
+    const cachedRuntime = join(cacheRoot, '0.2.0');
+    assert.equal((await readdir(cachedRuntime)).sort().join(','), 'runtime.json,scripts');
+    assert.equal((await readdir(join(cachedRuntime, 'scripts'))).sort().join(','), 'cli.mjs,native-host.mjs');
+    await assert.rejects(lstat(join(cachedRuntime, 'SKILL.md')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(cachedRuntime, 'scripts', 'run.mjs')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(cachedRuntime, 'assets', 'extension')), { code: 'ENOENT' });
+    assert.equal((await prepare()).version, '0.2.0');
+    assert.equal(await runtime.run(['status']), 0);
     const committedMarker = await readFile(join(cacheRoot, 'current.json'), 'utf8');
     assert.deepEqual(JSON.parse(committedMarker), {
       version: '0.2.0',
-      runtimeProtocol: 2,
-      extensionLocation: 'legacy:0.1.1',
+      runtimeProtocol: 3,
     });
     await assertCommitted('0.2.0', committedMarker);
     if (process.platform === 'win32') {
@@ -166,29 +177,27 @@ test('Release preparation migrates legacy assets and rolls back checksum, protoc
       await assertPrivateTree(oldExtension);
     }
 
-    activeRelease = makeRelease('0.3.0', 2, true);
+    activeRelease = makeRelease('0.3.0', 3, true);
     await assert.rejects(prepare(), /SHA256/);
     await assertCommitted('0.2.0', committedMarker);
     await assert.rejects(lstat(join(cacheRoot, '0.3.0')), { code: 'ENOENT' });
 
-    activeRelease = makeRelease('0.4.0', 1);
+    activeRelease = makeRelease('0.4.0', 2);
     await assert.rejects(prepare(), /版本不兼容/);
     await assertCommitted('0.2.0', committedMarker);
     await assert.rejects(lstat(join(cacheRoot, '0.4.0')), { code: 'ENOENT' });
     assert.equal((await readdir(cacheRoot)).some((name) => name.startsWith('.prepare-')), false);
 
-    const incomingExtension = join(tempRoot, 'incoming', 'extension');
-    await mkdir(incomingExtension, { recursive: true });
-    await writeFile(join(incomingExtension, 'manifest.json'), JSON.stringify({ version: '0.5.0' }));
     await assert.rejects(runtime.materializeRuntime({
       version: '0.5.0',
-      extensionAssets: incomingExtension,
+      runtimeProtocol: 3,
+      minimumNodeVersion: '22.22.2',
+      runtimeCLI: join(tempRoot, 'incoming', 'cli.mjs'),
     }, {
       writeMarker: async () => { throw new Error('synthetic marker write failure'); },
     }), /synthetic marker write failure/);
     await assertCommitted('0.2.0', committedMarker);
-    assert.equal((await readdir(join(legacyRoot, '0.1.1', 'assets'))).some((name) =>
-      name.startsWith('.extension-stage-') || name.startsWith('.extension-previous-')), false);
+    assert.deepEqual(await readFile(oldManifest), oldManifestBytes);
   } finally {
     globalThis.fetch = originalFetch;
     process.stdout.write = originalWrite;

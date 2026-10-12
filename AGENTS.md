@@ -20,7 +20,7 @@
 - 元宝解析、`playable_url` 参数提取、视频详情解析、媒体选择和错误语义只在共享 JavaScript / TypeScript 核心中维护；Skill、自部署 API、Chrome 扩展不得复制各自的业务实现。
 - 核心通过运行环境的请求适配调用接口，不直接依赖 Node.js 文件系统、钥匙串、`chrome.*` 或 Cloudflare 环境绑定。这些能力由对应入口提供。
 - Skill 通过本地 CLI 和 Native Messaging 桥接调用本项目 Chrome 扩展；解析与浏览器登录态使用由扩展负责。桥接只传递固定任务和结果，不复制解析规则，不提供任意请求或脚本执行入口。
-- Skill 随包携带扩展和桥接程序，正常工作不依赖源码仓库、Docker、远程解析服务或 Codex Chrome 插件。首次安装与权限变更按用户授权执行；已安装时直接复用，不重复安装或确认。
+- Skill 使用本地 CLI 与 Native Messaging host，不随包携带或管理 Chrome 扩展；扩展独立构建和发布。缺失时默认安装 Chrome Web Store 版本，只有用户明确选择非商店版时才加载独立 Release ZIP 或源码构建产物。正常工作不依赖源码仓库、Docker、远程解析服务或 Codex Chrome 插件。首次安装与权限变更按用户授权执行；已安装且连接有效时直接复用。
 - Worker 与 Docker 提供同一解析 API 契约，媒体落盘交给 Skill、扩展或 API 调用者。服务使用部署者注入的元宝凭据，不假定它能自动继承本机 Chrome 登录态。
 
 ## 登录态与凭据处理

@@ -90,6 +90,13 @@ h2 {
   color: #ffb4ab;
 }
 
+.ai-prompt-popover .extension-version {
+  margin: 0 0 8px;
+  color: #c6c6c6;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .card {
   margin-bottom: 14px;
   padding: 22px;
@@ -226,6 +233,25 @@ button:disabled {
   margin: 0;
   color: #575a54;
   font-size: 13px;
+  line-height: 1.6;
+}
+
+.input-notes .login-status {
+  color: #575a54;
+  font-size: 13px;
+}
+
+.login-link,
+.privacy-note a {
+  color: #353934;
+  font-weight: 650;
+  text-underline-offset: 3px;
+}
+
+.privacy-note {
+  margin: 10px 2px 0;
+  color: #575a54;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -366,6 +392,12 @@ button:disabled {
   color: #1c1c1c;
   font-size: 16px;
   font-weight: 650;
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.ai-prompt-copy[data-copied="true"] {
+  background: #d9f0de;
+  transform: scale(.99);
 }
 
 .ai-prompt-copy:hover:not(:disabled) {
@@ -381,6 +413,11 @@ button:disabled {
   display: block;
   width: 22px;
   height: 22px;
+}
+
+.copy-success-icon {
+  font-size: 22px;
+  line-height: 1;
 }
 
 .result-heading {

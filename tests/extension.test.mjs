@@ -10,7 +10,7 @@ import {
   startDownload,
   waitForDownload,
 } from "../extension/app.mjs";
-import { startAgent } from "../extension/agent.mjs";
+import { createLoginStateManager, getInstanceId, LOGIN_REFRESH_ALARM, LOGIN_STORAGE_KEY } from "../extension/agent-state.mjs";
 import { API_URLS } from "../src/core.mjs";
 
 function createHiddenIframeHarness() {
@@ -108,7 +108,7 @@ async function withHiddenIframeHarness(harness, callback) {
   }
 }
 
-async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = {}, initialAlarms = {}, offscreenMessenger } = {}, callback) {
+async function withBackgroundHarness({ fetchImpl, timerApi, initialStorage = { [LOGIN_STORAGE_KEY]: { login: "anonymous", checkedAt: Date.now() } }, initialAlarms = {}, offscreenMessenger } = {}, callback) {
   const previousChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
   const previousFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const previousSetTimeout = Object.getOwnPropertyDescriptor(globalThis, "setTimeout");
@@ -778,198 +778,73 @@ test("toolbar action focuses the existing page or creates one", async () => {
   }
 });
 
-test("background restores a persisted pairing on Chrome startup without opening a page", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  await withBackgroundHarness({
-    initialStorage: { "weixin-channels-video:bridge-session": sessionId },
-  }, async (harness) => {
-    const { onStartup, ports, storage } = harness;
-    await onStartup.fire();
-    assert.equal(storage.get("weixin-channels-video:bridge-session"), sessionId);
-    assert.equal(storage.get("weixin-channels-video:bridge-retry-count"), 0);
+test("background starts a per-profile protocol v2 connection and persistent alarms without pairing", async () => {
+  await withBackgroundHarness({}, async ({ ports, alarms, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    assert.match(instanceId, /^[0-9a-f-]{36}$/);
     assert.equal(ports.length, 1);
-    assert.deepEqual(ports[0].messages, [{ type: "hello", version: 1, sessionId }]);
-    assert.equal(harness.offscreenCreated, false);
+    assert.deepEqual(ports[0].messages, [{ type: "hello", version: 2, instanceId }]);
+    assert.deepEqual(alarms.get("weixin-channels-video:bridge-reconnect"), { periodInMinutes: 1 });
+    assert.deepEqual(alarms.get(LOGIN_REFRESH_ALARM), { periodInMinutes: 5 });
   });
 });
 
-test("installed and startup events reuse one restored Native Messaging connection", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  await withBackgroundHarness({
-    initialStorage: { "weixin-channels-video:bridge-session": sessionId },
-  }, async ({ onInstalled, onStartup, ports, storage }) => {
+test("background reuses one identity for install and startup and requires the matching v2 ready message", async () => {
+  await withBackgroundHarness({}, async ({ onInstalled, onStartup, ports, storage }) => {
     await onInstalled.fire();
     await onStartup.fire();
     assert.equal(ports.length, 1);
-    assert.deepEqual(ports[0].messages, [{ type: "hello", version: 1, sessionId }]);
-    assert.equal(storage.get("weixin-channels-video:bridge-retry-count"), 0);
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId: "523e4567-e89b-42d3-a456-426614174000" });
+    for (let attempt = 0; attempt < 20 && storage.get("weixin-channels-video:bridge-connection-state")?.stage !== "failed"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(storage.get("weixin-channels-video:bridge-connection-state"), { version: 1, stage: "failed", reason: "invalid_ready_message" });
   });
 });
 
-test("worker module load restores a pairing only when no retry alarm is pending", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  const pairingKey = "weixin-channels-video:bridge-session";
-  const retryKey = "weixin-channels-video:bridge-retry-count";
-  const alarmName = "weixin-channels-video:bridge-reconnect";
-
-  await withBackgroundHarness({
-    initialStorage: { [pairingKey]: sessionId, [retryKey]: 2 },
-  }, async ({ ports }) => {
-    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.equal(ports.length, 1, "a worker restart can recover without a startup event");
-  });
-
-  await withBackgroundHarness({
-    initialStorage: { [pairingKey]: sessionId, [retryKey]: 2 },
-    initialAlarms: { [alarmName]: { delayInMinutes: 4 } },
-  }, async ({ onAlarm, ports, alarms, storage }) => {
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(ports.length, 0, "module loading respects the scheduled backoff");
-    assert.equal(storage.get(retryKey), 2, "module loading preserves the persisted attempt count");
-    alarms.delete(alarmName);
-    await onAlarm.fire({ name: alarmName });
-    assert.equal(ports.length, 1);
-    assert.equal(storage.get(retryKey), 2, "alarm wake does not reset the retry count");
-  });
-
-  await withBackgroundHarness({
-    initialStorage: { [pairingKey]: sessionId, [retryKey]: 5 },
-  }, async ({ ports }) => {
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(ports.length, 0, "worker restarts do not bypass the retry limit");
-  });
-});
-
-test("background migrates a legacy page pairing through offscreen without opening the main tab", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  const messages = [];
-  await withBackgroundHarness({
-    offscreenMessenger: async (message) => {
-      messages.push(message);
-      if (message.type === "weixin-channels-video:offscreen-read-pairing") return { sessionId };
-      if (message.type === "weixin-channels-video:offscreen-clear-pairing") return { ok: true };
-      throw new Error("unexpected offscreen message");
-    },
-  }, async (harness) => {
-    const { onStartup, ports, storage } = harness;
-    await onStartup.fire();
-    assert.equal(harness.offscreenCreated, true);
-    assert.equal(storage.get("weixin-channels-video:bridge-session"), sessionId);
-    assert.deepEqual(messages, [
-      { type: "weixin-channels-video:offscreen-read-pairing" },
-      { type: "weixin-channels-video:offscreen-clear-pairing", sessionId },
-    ]);
-    assert.equal(ports.length, 1);
-    assert.deepEqual(ports[0].messages, [{ type: "hello", version: 1, sessionId }]);
-  });
-});
-
-test("pairing opens one background Native Messaging port and keeps task result fields", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  const requestId = "323e4567-e89b-42d3-a456-426614174000";
-  const shareUrl = "https://weixin.qq.com/sph/synthetic";
-  const parseBody = {
-    type: "video_channel_url",
-    url: shareUrl,
-    scene: 1,
-  };
-  const feedResult = {
-    errCode: 0,
-    data: {
-      feedInfo: {
-        description: "A title",
-        coverUrl: "https://media.example/cover.jpg",
-        h264VideoInfo: { videoUrl: "https://media.example/video.mp4" },
-      },
-      authorInfo: { nickname: "An author" },
-    },
-  };
-  const calls = [];
-  await withBackgroundHarness({
-    fetchImpl: async (url, init) => {
-      calls.push({ url, init });
-      if (url === API_URLS.userInfo) {
-        return Response.json({ userId: "user", needRefreshToken: false, anonUser: { isAnon: false } });
-      }
-      if (url.startsWith(API_URLS.feedInfo)) return Response.json(feedResult);
-      assert.fail("unexpected upstream URL");
-    },
-    offscreenMessenger: async (message) => {
-      assert.equal(message.type, "weixin-channels-video:offscreen-parse");
-      assert.deepEqual(JSON.parse(message.body), parseBody);
-      return {
-        status: 200,
-        body: JSON.stringify({
-          code: 0,
-          data: {
-            playable_url: "https://yuanbao.tencent.com/share?token=private-token&eid=private-eid",
-            desc: "A title",
-            author: "An author",
-          },
-        }),
-      };
-    },
-  }, async ({ send, ports, storage }) => {
-    assert.deepEqual(await send({ type: "weixin-channels-video:pair", sessionId }), { ok: true });
-    assert.equal(storage.get("weixin-channels-video:bridge-session"), sessionId);
-    assert.equal(ports.length, 1);
-    assert.deepEqual(ports[0].messages, [{ type: "hello", version: 1, sessionId }]);
-
-    await ports[0].onMessage.fire({ type: "ready", version: 1 });
-    await ports[0].onMessage.fire({ id: requestId, command: "parse", url: shareUrl });
-    for (let attempt = 0; attempt < 20 && ports[0].messages.length < 2; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-
-    assert.equal(ports[0].messages.length, 2);
-    assert.deepEqual(ports[0].messages[1], {
-      id: requestId,
-      ok: true,
-      result: {
-        title: "A title",
-        author: "An author",
-        coverUrl: "https://media.example/cover.jpg",
-        previewUrl: "https://media.example/video.mp4",
-        downloadUrl: "https://media.example/video.mp4",
-        mediaVariants: [{ label: "H.264", downloadUrl: "https://media.example/video.mp4" }],
-      },
-    });
-    assert.equal(JSON.stringify(ports[0].messages[1]).includes("private-token"), false);
-    assert.equal(calls.filter((call) => call.url === API_URLS.userInfo).length, 1);
-    assert.equal(calls.filter((call) => call.url.startsWith(API_URLS.feedInfo)).length, 1);
-    assert.deepEqual(await send({ type: "weixin-channels-video:pair", sessionId }), { ok: true });
-    assert.equal(ports.length, 1, "repeated pairing reuses the active port");
-  });
-});
-
-test("rotating a paired session closes the old port and records host startup separately from readiness", async () => {
-  const previousSession = "123e4567-e89b-42d3-a456-426614174000";
-  const nextSession = "223e4567-e89b-42d3-a456-426614174000";
+test("only a valid legacy ready payload is reported as unsupported protocol", async () => {
   const stateKey = "weixin-channels-video:bridge-connection-state";
-  await withBackgroundHarness({
-    initialStorage: { "weixin-channels-video:bridge-session": previousSession },
-  }, async ({ onStartup, ports, storage, send }) => {
-    await onStartup.fire();
-    const previousPort = ports[0];
-    assert.deepEqual(previousPort.messages, [{ type: "hello", version: 1, sessionId: previousSession }]);
+  await withBackgroundHarness({}, async ({ ports, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    await ports[0].onMessage.fire({ type: "ready", version: 1 });
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+    assert.equal(ports[0].disconnects, 1);
+  });
 
-    assert.deepEqual(await send({ type: "weixin-channels-video:pair", sessionId: nextSession }), { ok: true });
-    assert.equal(storage.get("weixin-channels-video:bridge-session"), nextSession);
-    assert.equal(previousPort.disconnects, 1);
-    assert.deepEqual(ports[1].messages, [{ type: "hello", version: 1, sessionId: nextSession }]);
-    assert.equal(storage.get(stateKey).stage, "host_starting", "pairing acknowledgment does not claim host readiness");
+  await withBackgroundHarness({}, async ({ ports, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    await ports[0].onMessage.fire({ type: "ready", version: 3, instanceId });
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+  });
 
-    await ports[1].onMessage.fire({ type: "ready", version: 1 });
-    for (let attempt = 0; attempt < 20 && storage.get(stateKey)?.stage !== "host_ready"; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "host_ready" });
+  for (const [ready, expectedReason] of [
+    [{ type: "ready", version: 1, instanceId: "423e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 2, instanceId: "523e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 3, instanceId: "523e4567-e89b-42d3-a456-426614174000" }, "invalid_ready_message"],
+    [{ type: "ready", version: 2, instanceId: "423e4567-e89b-42d3-a456-426614174000", extra: true }, "invalid_ready_message"],
+  ]) {
+    await withBackgroundHarness({}, async ({ ports, storage }) => {
+      for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+      await ports[0].onMessage.fire(ready);
+      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: expectedReason });
+    });
+  }
+});
+
+test("background reconnects on the persistent one-minute alarm after host disconnect", async () => {
+  await withBackgroundHarness({}, async ({ ports, onAlarm, alarms, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId: storage.get("weixin-channels-video:instance-id") });
+    await ports[0].onDisconnect.fire();
+    assert.deepEqual(alarms.get("weixin-channels-video:bridge-reconnect"), { periodInMinutes: 1 });
+    await onAlarm.fire({ name: "weixin-channels-video:bridge-reconnect" });
+    assert.equal(ports.length, 2);
+    assert.deepEqual(ports[1].messages, [{ type: "hello", version: 2, instanceId: storage.get("weixin-channels-video:instance-id") }]);
   });
 });
 
-test("Native Messaging disconnect stores safe categories for Chrome's documented host errors", async () => {
+test("Native Messaging disconnects store safe Chrome error categories", async () => {
   const stateKey = "weixin-channels-video:bridge-connection-state";
   const errors = [
     ["Specified native messaging host not found. C:\\private\\manifest.json", "host_not_found"],
@@ -981,130 +856,50 @@ test("Native Messaging disconnect stores safe categories for Chrome's documented
     ["Unrecognized runtime error with a private path", "host_disconnected"],
   ];
   for (const [message, reason] of errors) {
-    await withBackgroundHarness({}, async ({ onStartup, ports, storage, chromeApi }) => {
-      await chromeApi.storage.local.set({ "weixin-channels-video:bridge-session": "123e4567-e89b-42d3-a456-426614174000" });
-      await onStartup.fire();
+    await withBackgroundHarness({}, async ({ ports, storage, chromeApi }) => {
+      for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
       chromeApi.runtime.lastError = { message };
       await ports[0].onDisconnect.fire();
-      for (let attempt = 0; attempt < 20 && storage.get(stateKey)?.stage !== "failed"; attempt += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
+      for (let attempt = 0; attempt < 20 && storage.get(stateKey)?.stage !== "failed"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
       assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason });
       assert.equal(JSON.stringify(storage.get(stateKey)).includes("private"), false);
     });
   }
 });
 
-test("offscreen accepts only fixed background parse and pairing messages", async () => {
-  const harness = createHiddenIframeHarness();
-  const extensionId = "synthetic-extension-id";
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  let legacySession = sessionId;
-  const removed = [];
-  harness.windowApi.localStorage = {
-    getItem(key) {
-      assert.equal(key, "weixin-channels-video:bridge-session");
-      return legacySession;
-    },
-    removeItem(key) {
-      assert.equal(key, "weixin-channels-video:bridge-session");
-      legacySession = null;
-      removed.push(key);
-    },
-  };
-  const previousChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
-  let listener;
-  globalThis.chrome = {
-    runtime: {
-      id: extensionId,
-      getURL: (path) => "chrome-extension://" + extensionId + "/" + path,
-      onMessage: { addListener: (callback) => { listener = callback; } },
-    },
-  };
-  try {
-    await withHiddenIframeHarness(harness, async () => {
-      await import("../extension/offscreen.mjs?test=" + Date.now() + "-" + Math.random());
-      const workerSender = {
-        id: extensionId,
-      };
-      let migrated;
-      listener({ type: "weixin-channels-video:offscreen-read-pairing" }, workerSender, (value) => { migrated = value; });
-      assert.deepEqual(migrated, { sessionId });
-
-      let cleared;
-      listener({
-        type: "weixin-channels-video:offscreen-clear-pairing",
-        sessionId,
-      }, workerSender, (value) => { cleared = value; });
-      assert.deepEqual(cleared, { ok: true });
-      assert.deepEqual(removed, ["weixin-channels-video:bridge-session"]);
-      assert.equal(legacySession, null);
-
-      const request = {
-        type: "weixin-channels-video:offscreen-parse",
-        body: JSON.stringify({ type: "video_channel_url" }),
-      };
-      assert.equal(listener(request, {
-        id: extensionId,
-        url: "chrome-extension://" + extensionId + "/index.html",
-        frameId: 0,
-        documentId: "synthetic-page-document",
-      }, () => assert.fail("page messages cannot start background Yuanbao requests")), undefined);
-      const responsePromise = new Promise((resolve) => {
-        assert.equal(listener(request, workerSender, resolve), true);
-      });
-      const [{ message }] = harness.requestMessages;
-      harness.dispatchMessage({
-        type: "weixin-channels-video:api-response",
-        requestId: message.requestId,
-        status: 200,
-        body: "{\"code\":0}",
-      });
-      assert.deepEqual(await responsePromise, { status: 200, body: "{\"code\":0}" });
-    });
-  } finally {
-    if (previousChrome) Object.defineProperty(globalThis, "chrome", previousChrome);
-    else delete globalThis.chrome;
-  }
-});
-
-test("one reconnect alarm uses bounded backoff and stops after five failed starts", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  await withBackgroundHarness({
-    initialStorage: { "weixin-channels-video:bridge-session": sessionId },
-  }, async ({ onStartup, onAlarm, alarms, ports, storage }) => {
-    await onStartup.fire();
-    const expectedDelays = [1, 2, 4, 8, 15];
-    for (const expectedDelay of expectedDelays) {
-      const current = ports.at(-1);
-      await current.onDisconnect.fire();
-      assert.deepEqual([...alarms.keys()], ["weixin-channels-video:bridge-reconnect"]);
-      assert.deepEqual(alarms.get("weixin-channels-video:bridge-reconnect"), { delayInMinutes: expectedDelay });
-      alarms.delete("weixin-channels-video:bridge-reconnect");
-      await onAlarm.fire({ name: "weixin-channels-video:bridge-reconnect" });
-      assert.equal(ports.length, expectedDelays.indexOf(expectedDelay) + 2);
-    }
-    await ports.at(-1).onDisconnect.fire();
-    assert.equal(storage.get("weixin-channels-video:bridge-retry-count"), 5);
-    assert.equal(alarms.size, 0, "failed retries stop until startup or another explicit pairing");
+test("host exit remains a host exit after the v2 ready handshake", async () => {
+  const stateKey = "weixin-channels-video:bridge-connection-state";
+  await withBackgroundHarness({}, async ({ ports, storage, chromeApi }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
+    await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId });
+    chromeApi.runtime.lastError = { message: "Native host has exited." };
+    await ports[0].onDisconnect.fire();
+    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "host_exited" });
   });
 });
 
-test("Native Messaging commands share one queue across port reconnections", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+test("only the fixed index page can refresh login or report authentication expiry", async () => {
+  const { LOGIN_REFRESH_TYPE, AUTH_FAILURE_TYPE, LOGIN_STORAGE_KEY } = await import("../extension/agent-state.mjs");
+  await withBackgroundHarness({ fetchImpl: async () => Response.json({ userId: "user", needRefreshToken: false, anonUser: { isAnon: false } }) }, async ({ send, extensionId, storage }) => {
+    const sender = { id: extensionId, frameId: 0, url: `chrome-extension://${extensionId}/index.html` };
+    assert.equal(await send({ type: LOGIN_REFRESH_TYPE }, { ...sender, frameId: 3 }), undefined);
+    const refreshed = await send({ type: LOGIN_REFRESH_TYPE }, sender);
+    assert.equal(refreshed.ok, true);
+    assert.equal(refreshed.state.login, "authenticated");
+    await send({ type: AUTH_FAILURE_TYPE }, sender);
+    assert.deepEqual(storage.get(LOGIN_STORAGE_KEY), { login: "anonymous", checkedAt: storage.get(LOGIN_STORAGE_KEY).checkedAt });
+  });
+});
+
+test("Native Messaging commands share one queue across port reconnections without replay", async () => {
   let startFirstOffscreenRequest;
   let finishFirstOffscreenRequest;
   const firstRequestStarted = new Promise((resolve) => { startFirstOffscreenRequest = resolve; });
   const firstRequestResult = new Promise((resolve) => { finishFirstOffscreenRequest = resolve; });
   let parseRequests = 0;
   await withBackgroundHarness({
-    initialStorage: { "weixin-channels-video:bridge-session": sessionId },
-    fetchImpl: async (url) => {
-      if (url === API_URLS.userInfo) {
-        return Response.json({ userId: "user", needRefreshToken: false, anonUser: { isAnon: false } });
-      }
-      assert.fail("unexpected upstream URL");
-    },
+    fetchImpl: async () => Response.json({ userId: "user", needRefreshToken: false, anonUser: { isAnon: false } }),
     offscreenMessenger: async (message) => {
       assert.equal(message.type, "weixin-channels-video:offscreen-parse");
       parseRequests += 1;
@@ -1114,111 +909,78 @@ test("Native Messaging commands share one queue across port reconnections", asyn
       }
       return { status: 500, body: "{}" };
     },
-  }, async ({ onStartup, onAlarm, ports }) => {
-    await onStartup.fire();
+  }, async ({ onAlarm, ports, storage }) => {
+    for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const instanceId = storage.get("weixin-channels-video:instance-id");
     const oldPort = ports[0];
-    await oldPort.onMessage.fire({ type: "ready", version: 1 });
-    await oldPort.onMessage.fire({
-      id: "323e4567-e89b-42d3-a456-426614174000",
-      command: "parse",
-      url: "https://weixin.qq.com/sph/first",
-    });
+    await oldPort.onMessage.fire({ type: "ready", version: 2, instanceId });
+    await oldPort.onMessage.fire({ id: "323e4567-e89b-42d3-a456-426614174000", command: "parse", url: "https://weixin.qq.com/sph/first" });
     await firstRequestStarted;
-    await oldPort.onMessage.fire({
-      id: "423e4567-e89b-42d3-a456-426614174000",
-      command: "parse",
-      url: "https://weixin.qq.com/sph/queued-old-request",
-    });
-
+    await oldPort.onMessage.fire({ id: "423e4567-e89b-42d3-a456-426614174000", command: "parse", url: "https://weixin.qq.com/sph/queued-old-request" });
     await oldPort.onDisconnect.fire();
     await onAlarm.fire({ name: "weixin-channels-video:bridge-reconnect" });
     const newPort = ports[1];
-    await newPort.onMessage.fire({ type: "ready", version: 1 });
-    await newPort.onMessage.fire({
-      id: "523e4567-e89b-42d3-a456-426614174000",
-      command: "parse",
-      url: "https://weixin.qq.com/sph/new-port-request",
-    });
+    await newPort.onMessage.fire({ type: "ready", version: 2, instanceId });
+    await newPort.onMessage.fire({ id: "523e4567-e89b-42d3-a456-426614174000", command: "parse", url: "https://weixin.qq.com/sph/new-port-request" });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(parseRequests, 1, "new-port work waits for the dispatched old task");
-
     finishFirstOffscreenRequest({ status: 500, body: "{}" });
-    for (let attempt = 0; attempt < 20 && newPort.messages.length < 2; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    for (let attempt = 0; attempt < 20 && newPort.messages.length < 2; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(parseRequests, 2, "queued work from the stale port is not replayed");
     assert.equal(oldPort.messages.length, 1, "the stale port receives no late result");
     assert.equal(newPort.messages.length, 2);
   });
 });
 
-test("CLI bootstrap page sends only the fixed pairing and closes after background acknowledgment", async () => {
-  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
-  const url = "chrome-extension://synthetic-id/index.html";
-  const messages = [];
-  const calls = [];
-  const listeners = new Map();
-  const windowApi = {
-    location: { hash: "#agent-connect=" + sessionId },
-    history: {
-      state: null,
-      replaceState(_state, _title, value) {
-        calls.push(["clean", value]);
-        windowApi.location.hash = "";
-      },
-    },
-    addEventListener: (type, callback) => listeners.set(type, callback),
-  };
-  const chromeApi = {
-    runtime: {
-      getURL: (path) => "chrome-extension://synthetic-id/" + path,
-      sendMessage: async (message) => {
-        messages.push(message);
-        return { ok: true };
-      },
-    },
-    tabs: {
-      getCurrent: async () => ({ id: 42 }),
-      remove: async (id) => calls.push(["remove", id]),
-    },
-  };
-
-  startAgent({ chromeApi, windowApi });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(messages, [{ type: "weixin-channels-video:pair", sessionId }]);
-  assert.deepEqual(calls, [["clean", url], ["remove", 42]]);
-  assert.equal(windowApi.location.hash, "");
-  assert.equal(typeof listeners.get("hashchange"), "function");
+test("instance identity is stable in extension storage", async () => {
+  const values = new Map();
+  const chromeApi = { storage: { local: {
+    async get(key) { return { [key]: values.get(key) }; },
+    async set(items) { for (const [key, value] of Object.entries(items)) values.set(key, value); },
+  } } };
+  const expected = "123e4567-e89b-42d3-a456-426614174000";
+  assert.equal(await getInstanceId(chromeApi, () => expected), expected);
+  assert.equal(await getInstanceId(chromeApi, () => { throw new Error("must reuse stored identity"); }), expected);
 });
 
-test("manual extension page stays open and invalid pairing hashes are removed without pairing", async () => {
-  let sends = 0;
-  let removes = 0;
-  let hashChange;
-  const windowApi = {
-    location: { hash: "" },
-    history: { replaceState() { windowApi.location.hash = ""; } },
-    addEventListener(type, callback) { assert.equal(type, "hashchange"); hashChange = callback; },
-  };
+test("login snapshot stays fast, refreshes once, and preserves auth expiry over an older check", async () => {
+  const values = new Map();
+  const alarms = [];
+  let now = 10_000;
+  let resolveCheck;
+  let checks = 0;
   const chromeApi = {
-    runtime: {
-      getURL: () => "chrome-extension://synthetic-id/index.html",
-      sendMessage: async () => { sends += 1; return { ok: true }; },
-    },
-    tabs: {
-      getCurrent: async () => ({ id: 1 }),
-      remove: async () => { removes += 1; },
-    },
+    storage: { local: {
+      async get(key) { return { [key]: values.get(key) }; },
+      async set(items) { for (const [key, value] of Object.entries(items)) values.set(key, value); },
+    } },
+    alarms: { async create(name, info) { alarms.push([name, info]); } },
   };
-  startAgent({ chromeApi, windowApi });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sends, 0);
-  assert.equal(removes, 0);
+  const manager = createLoginStateManager({
+    chromeApi,
+    clock: () => now,
+    requestFactory: () => () => {},
+    checker: () => { checks += 1; return new Promise((resolve) => { resolveCheck = resolve; }); },
+  });
 
-  windowApi.location.hash = "#agent-connect=not-a-session";
-  hashChange();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sends, 0);
-  assert.equal(removes, 0);
-  assert.equal(windowApi.location.hash, "");
+  assert.deepEqual(await manager.status(), { login: "not_checked", checkedAt: null });
+  assert.equal(checks, 0);
+  assert.deepEqual(alarms, []);
+  const first = manager.status({ refreshLogin: true });
+  const second = manager.refresh();
+  assert.equal(checks, 1);
+  await manager.markAuthenticationFailure({ code: "AUTH_EXPIRED" });
+  resolveCheck({ status: "authenticated" });
+  assert.deepEqual(await first, { login: "anonymous", checkedAt: now });
+  assert.deepEqual(await second, { login: "anonymous", checkedAt: now });
+  assert.deepEqual(values.get(LOGIN_STORAGE_KEY), { login: "anonymous", checkedAt: now });
+  now += 5 * 60_000;
+  const next = manager.refresh();
+  assert.equal(checks, 2);
+  resolveCheck({ status: "authenticated" });
+  assert.deepEqual(await next, { login: "authenticated", checkedAt: now });
+  assert.equal(await manager.status({ refreshLogin: true }).then((value) => value.login), "authenticated");
+  assert.equal(checks, 2);
+  await manager.start();
+  assert.deepEqual(alarms, [[LOGIN_REFRESH_ALARM, { periodInMinutes: 5 }]]);
 });

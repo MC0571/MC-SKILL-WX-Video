@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
-import { MAX_BRIDGE_MESSAGE_BYTES, SESSION_ID_PATTERN } from "./native-messaging.mjs";
+import { INSTANCE_ID_PATTERN, MAX_BRIDGE_MESSAGE_BYTES, SESSION_ID_PATTERN } from "./native-messaging.mjs";
 import {
   windowsPowerShellBuiltinModuleImport,
   windowsPowerShellPath,
@@ -315,13 +315,19 @@ export function verifyIpcProof(expected, actual) {
   return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
 }
 
-export function windowsPipeName(appSupportDir, sessionId) {
+export function bridgeInstanceKey(sessionId, instanceId) {
+  if (!SESSION_ID_PATTERN.test(sessionId) || !INSTANCE_ID_PATTERN.test(instanceId)) throw new Error("INVALID_IPC_ENDPOINT");
+  return createHash("sha256").update(`weixin-channels-video\0native-ipc\0instance\0${sessionId}\0${instanceId}`, "utf8").digest("hex");
+}
+
+export function windowsPipeName(appSupportDir, sessionId, instanceId) {
   if (typeof appSupportDir !== "string" || !appSupportDir || typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
     throw new Error("INVALID_IPC_ENDPOINT");
   }
+  if (instanceId !== undefined && !INSTANCE_ID_PATTERN.test(instanceId)) throw new Error("INVALID_IPC_ENDPOINT");
   const normalizedPath = appSupportDir.replaceAll("/", "\\").toLowerCase();
   const digest = createHash("sha256")
-    .update(`weixin-channels-video\0windows-pipe\0v${IPC_PROTOCOL}\0${normalizedPath}\0${sessionId}`, "utf8")
+    .update(`weixin-channels-video\0windows-pipe\0v${IPC_PROTOCOL}\0${normalizedPath}\0${sessionId}${instanceId ? `\0${instanceId}` : ""}`, "utf8")
     .digest("hex");
   return `${WINDOWS_PIPE_NAME_PREFIX}${digest.slice(0, 32)}`;
 }

@@ -1,4 +1,4 @@
-import { access, chmod, constants, lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, constants, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +7,8 @@ import { spawnSync } from "node:child_process";
 import { listChromeProfiles, selectChromeProfile, defaultChromeUserDataDir } from "./chrome-profile.mjs";
 import { assertWindowsPrivatePath, inspectWindowsPathSecurity, secureWindowsPath, windowsPowerShellBuiltinModuleImport, windowsPowerShellPath, WINDOWS_PRIVATE_PATH_ASSERTION } from "./windows-security.mjs";
 import { supportsNodeVersion } from "./runtime-support.mjs";
-import { NATIVE_HOST_NAME, SESSION_ID_PATTERN } from "../../../src/native-messaging.mjs";
-import { windowsPipeName } from "../../../src/native-ipc.mjs";
+import { INSTANCE_ID_PATTERN, NATIVE_HOST_NAME, SESSION_ID_PATTERN } from "../../../src/native-messaging.mjs";
+import { bridgeInstanceKey, windowsPipeName } from "../../../src/native-ipc.mjs";
 
 const HOST_DESCRIPTION = "Local bridge for the Weixin Channels Video Chrome extension.";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
@@ -120,6 +120,27 @@ function profileError(error) {
   return new BridgeSetupError("CHROME_PROFILE_UNAVAILABLE", "无法读取 Chrome profile 列表或元数据。");
 }
 
+function hostRegistrationUnavailable() {
+  return new BridgeSetupError("HOST_REGISTRATION_UNAVAILABLE", "无法访问 Chrome 的 Native Messaging 注册文件。请检查该文件或目录的访问权限，并按系统提示允许本次访问。");
+}
+
+async function ensureRegistrationDirectory(path) {
+  try { await lstat(path); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw hostRegistrationUnavailable();
+    try { await mkdir(path, { recursive: true, mode: 0o700 }); }
+    catch (createError) {
+      if (createError.code !== "EEXIST") throw hostRegistrationUnavailable();
+    }
+  }
+  try {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error();
+  } catch {
+    throw hostRegistrationUnavailable();
+  }
+}
+
 function packageScriptsDir() {
   return dirname(fileURLToPath(import.meta.url));
 }
@@ -134,13 +155,24 @@ function defaultAppSupportDir({ platform = process.platform, home = homedir(), e
 }
 
 async function ensurePrivateDirectory(path, platform = process.platform, securityOptions = {}) {
-  const createdPath = await mkdir(path, { recursive: true, mode: 0o700 });
+  let createdPath = false;
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    try {
+      await mkdir(path, { recursive: true, mode: 0o700 });
+      createdPath = true;
+    } catch (createError) {
+      if (createError.code !== "EEXIST") throw createError;
+    }
+  }
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Bridge directory is unsafe.");
   if (platform === "win32") await secureWindowsPath(path, {
     ...securityOptions,
     directory: true,
-    newlyCreated: createdPath !== undefined,
+    newlyCreated: createdPath,
   });
   else await chmod(path, 0o700);
 }
@@ -403,10 +435,12 @@ function isOwnedConfig(value, root) {
     value.hostName === NATIVE_HOST_NAME &&
     EXTENSION_ID_PATTERN.test(value.extensionId) &&
     resolve(value.appSupportDir ?? "") === root &&
-    typeof value.profileDirectory === "string" &&
-    value.profileDirectory.length > 0 &&
-    !value.profileDirectory.includes("/") &&
-    !value.profileDirectory.includes("\\") &&
+    (value.profileDirectory === undefined || (
+      typeof value.profileDirectory === "string" &&
+      value.profileDirectory.length > 0 &&
+      !value.profileDirectory.includes("/") &&
+      !value.profileDirectory.includes("\\")
+    )) &&
     (value.ipcProtocol === undefined || value.ipcProtocol === 2);
 }
 
@@ -455,8 +489,6 @@ export async function installBridge(options = {}) {
     throw new Error("An absolute Node.js executable path is required.");
   }
   let selectedProfile;
-  try { selectedProfile = await selectChromeProfile(profile, chromeUserDataDir); }
-  catch (error) { throw profileError(error); }
   const root = resolve(appSupportDir);
   const registrationDir = registryDir ? resolve(registryDir) : undefined;
   const hostPath = join(root, "native-host.mjs");
@@ -476,7 +508,12 @@ export async function installBridge(options = {}) {
     : launcherPath;
 
   const existingFileOptions = { platform, securityOptions };
-  const existingManifestText = await inspectExisting(manifestPath, existingFileOptions);
+  let existingManifestText;
+  try { existingManifestText = await inspectExisting(manifestPath, existingFileOptions); }
+  catch (error) {
+    if (error instanceof BridgeSetupError) throw error;
+    throw hostRegistrationUnavailable();
+  }
   let ownsManifest = false;
   if (existingManifestText !== undefined) {
     const existingManifest = readJson(existingManifestText, "Existing Native Messaging registration");
@@ -495,6 +532,20 @@ export async function installBridge(options = {}) {
     }
     ownsConfig = true;
     existingConfigValue = value;
+  }
+  if (profile !== undefined) {
+    try { selectedProfile = await selectChromeProfile(profile, chromeUserDataDir); }
+    catch (error) { throw profileError(error); }
+  } else if (
+    ownsConfig &&
+    existingConfigValue.extensionId === extensionId &&
+    resolve(existingConfigValue.chromeUserDataDir ?? "") === resolve(chromeUserDataDir) &&
+    existingConfigValue.profileDirectory
+  ) {
+    selectedProfile = {
+      directory: existingConfigValue.profileDirectory,
+      ...(typeof existingConfigValue.profileName === "string" ? { name: existingConfigValue.profileName } : {}),
+    };
   }
   const existingHost = await inspectExisting(hostPath, existingFileOptions);
   const existingLauncher = await inspectExisting(launcherPath, existingFileOptions);
@@ -528,8 +579,10 @@ export async function installBridge(options = {}) {
     ipcProtocol: 2,
     extensionId,
     nodeExecutable,
-    profileDirectory: selectedProfile.directory,
-    profileName: selectedProfile.name,
+    ...(selectedProfile ? {
+      profileDirectory: selectedProfile.directory,
+      ...(selectedProfile.name === undefined ? {} : { profileName: selectedProfile.name }),
+    } : {}),
     chromeUserDataDir: resolve(chromeUserDataDir),
     appSupportDir: root,
     configPath,
@@ -570,7 +623,7 @@ export async function installBridge(options = {}) {
   };
 
   if (platform !== "win32") await ensurePrivateDirectory(root, platform, securityOptions);
-  if (registrationDir) await mkdir(registrationDir, { recursive: true, mode: 0o700 });
+  if (registrationDir) await ensureRegistrationDirectory(registrationDir);
   if (platform === "win32") {
     const entries = [
       { path: hostPath, content: nativeHostBundle, mode: 0o600, replace: existingHost !== undefined },
@@ -609,10 +662,15 @@ export async function installBridge(options = {}) {
     await atomicWrite(sessionPath, `${JSON.stringify(session)}\n`, 0o600, { replace: existingSession !== undefined, platform, securityOptions });
     const launcher = `#!/bin/sh\nexec ${shellQuote(nodeExecutable)} ${shellQuote(hostPath)} ${shellQuote(configPath)} "$@"\n`;
     await atomicWrite(launcherPath, launcher, 0o700, { replace: true, platform, securityOptions });
-    await atomicWrite(manifestPath, `${JSON.stringify(hostManifest, null, 2)}\n`, 0o600, { replace: existingManifestText !== undefined, platform, securityOptions });
+    try {
+      await atomicWrite(manifestPath, `${JSON.stringify(hostManifest, null, 2)}\n`, 0o600, { replace: existingManifestText !== undefined, platform, securityOptions });
+    } catch (error) {
+      if (error instanceof BridgeSetupError) throw error;
+      throw hostRegistrationUnavailable();
+    }
   }
 
-  return { config, hostManifestPath: manifestPath, launcherPath, profile: selectedProfile };
+  return { config, hostManifestPath: manifestPath, launcherPath, profile: selectedProfile ?? null };
 }
 
 export async function readBridgeInstallation({ appSupportDir = defaultAppSupportDir() } = {}) {
@@ -634,10 +692,12 @@ export async function readBridgeInstallation({ appSupportDir = defaultAppSupport
     value?.version !== 1 ||
     value.hostName !== NATIVE_HOST_NAME ||
     !EXTENSION_ID_PATTERN.test(value.extensionId) ||
-    typeof value.profileDirectory !== "string" ||
-    !value.profileDirectory ||
-    value.profileDirectory.includes("/") ||
-    value.profileDirectory.includes("\\") ||
+    (value.profileDirectory !== undefined && (
+      typeof value.profileDirectory !== "string" ||
+      !value.profileDirectory ||
+      value.profileDirectory.includes("/") ||
+      value.profileDirectory.includes("\\")
+    )) ||
     resolve(value.appSupportDir) !== root ||
     (value.ipcProtocol !== undefined && value.ipcProtocol !== 2)
   ) throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地连接配置无效，请重新运行 install-bridge。");
@@ -670,6 +730,89 @@ export async function readBridgeSessionInfo(config, {
   } catch {
     return null;
   }
+}
+
+export async function readBridgeConnections(config, sessionInfo, {
+  platform = config?.platform ?? process.platform,
+  env = process.env,
+  securitySpawnSyncImpl = spawnSync,
+} = {}) {
+  if (!config?.appSupportDir || !isBridgeSession({ version: 1, ...sessionInfo })) return [];
+  const directory = join(config.appSupportDir, "connections");
+  try {
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe connections directory");
+    const securityOptions = { platform, env, spawnSyncImpl: securitySpawnSyncImpl };
+    if (platform === "win32") await assertWindowsPrivatePath(directory, { ...securityOptions, directory: true });
+    const records = [];
+    for (const name of await readdir(directory)) {
+      const match = /^([0-9a-f-]{36})\.json$/.exec(name);
+      if (!match || !INSTANCE_ID_PATTERN.test(match[1])) continue;
+      const path = join(directory, name);
+      try {
+        const file = await lstat(path);
+        if (!file.isFile() || file.isSymbolicLink()) throw new Error("unsafe connection record");
+        if (platform === "win32") await assertWindowsPrivatePath(path, securityOptions);
+        const value = JSON.parse(await readFile(path, "utf8"));
+        if (
+          value?.version === 1 && value.sessionId === sessionInfo.sessionId &&
+          value.instanceId === match[1] && SESSION_ID_PATTERN.test(value.generation ?? "") &&
+          [1, 2].includes(value.nativeProtocol) && Object.keys(value).length === 5 &&
+          ["version", "sessionId", "instanceId", "generation", "nativeProtocol"].every((key) => Object.hasOwn(value, key))
+        ) records.push(value);
+      } catch {
+        throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地连接列表包含无效或不安全的记录。");
+      }
+    }
+    return records;
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地连接列表不可用，请检查桥接目录权限。");
+  }
+}
+
+export async function readBridgeSelection(config, sessionInfo, {
+  platform = config?.platform ?? process.platform,
+  env = process.env,
+  securitySpawnSyncImpl = spawnSync,
+} = {}) {
+  const path = join(config.appSupportDir, "selection.json");
+  try {
+    const options = { platform, env, spawnSyncImpl: securitySpawnSyncImpl };
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("invalid selection file type");
+    if (platform === "win32") await assertWindowsPrivatePath(path, options);
+    const value = JSON.parse(await readFile(path, "utf8"));
+    if (value?.version !== 1 || value.sessionId !== sessionInfo.sessionId || !INSTANCE_ID_PATTERN.test(value.instanceId ?? "") || Object.keys(value).length !== 3) {
+      throw new Error("invalid selection");
+    }
+    return value.instanceId;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地所选 Chrome 用户配置无效，请运行 connect --instance 重新选择。");
+  }
+}
+
+export async function writeBridgeSelection(config, sessionInfo, instanceId, {
+  platform = config?.platform ?? process.platform,
+  env = process.env,
+  securitySpawnSyncImpl = spawnSync,
+} = {}) {
+  if (!INSTANCE_ID_PATTERN.test(instanceId ?? "")) throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "Chrome 用户标识无效。");
+  const path = join(config.appSupportDir, "selection.json");
+  const existing = await inspectExisting(path, { platform, securityOptions: { platform, env, spawnSyncImpl: securitySpawnSyncImpl } });
+  if (existing !== undefined) {
+    let value;
+    try { value = JSON.parse(existing); } catch { throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地所选 Chrome 用户配置无效。"); }
+    if (value?.version !== 1 || !SESSION_ID_PATTERN.test(value.sessionId ?? "") || !INSTANCE_ID_PATTERN.test(value.instanceId ?? "") || Object.keys(value).length !== 3) {
+      throw new BridgeSetupError("BRIDGE_CONFIG_INVALID", "本地所选 Chrome 用户配置无效。");
+    }
+  }
+  await atomicWrite(path, `${JSON.stringify({ version: 1, sessionId: sessionInfo.sessionId, instanceId })}\n`, 0o600, {
+    replace: existing !== undefined,
+    platform,
+    securityOptions: { platform, env, spawnSyncImpl: securitySpawnSyncImpl },
+  });
 }
 
 async function fileStatus(path, { allowSymlink = false, executable = false } = {}) {
@@ -867,9 +1010,11 @@ export async function inspectBridgeComponents(config, {
   };
 }
 
-export function bridgeSocketPath(config, sessionId) {
+export function bridgeSocketPath(config, sessionId, instanceId) {
   if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error("Bridge session is invalid.");
-  if ((config?.platform ?? process.platform) === "win32") return `\\\\.\\pipe\\${windowsPipeName(config.appSupportDir, sessionId)}`;
+  if (instanceId !== undefined && !INSTANCE_ID_PATTERN.test(instanceId)) throw new Error("Bridge instance is invalid.");
+  if ((config?.platform ?? process.platform) === "win32") return `\\\\.\\pipe\\${windowsPipeName(config.appSupportDir, sessionId, instanceId)}`;
+  if (instanceId !== undefined) return join(config.appSupportDir, `i-${bridgeInstanceKey(sessionId, instanceId).slice(0, 16)}.sock`);
   return join(config.appSupportDir, `s-${sessionId.replaceAll("-", "").slice(0, 16)}.sock`);
 }
 

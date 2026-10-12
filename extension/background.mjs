@@ -1,25 +1,18 @@
 import { API_URLS, ParseError } from "../src/core.mjs";
-import { NATIVE_HOST_NAME, SESSION_ID_PATTERN, validateBridgeCommand } from "../src/native-messaging.mjs";
+import { INSTANCE_ID_PATTERN, NATIVE_HOST_NAME, validateBridgeCommand } from "../src/native-messaging.mjs";
 import { createExtensionRequest, PAGE_DOWNLOAD_TYPE, safeFilename, startDownload, waitForDownload } from "./app.mjs";
 import { createAgentCommandHandler } from "./agent.mjs";
+import { AUTH_FAILURE_TYPE, CONNECTION_STORAGE_KEY, LOGIN_REFRESH_ALARM, LOGIN_REFRESH_TYPE, createLoginStateManager, getInstanceId } from "./agent-state.mjs";
 
 const CHANNELS_ORIGIN = "https://channels.weixin.qq.com";
 const CHANNELS_FEED_PAGE_URL = `${CHANNELS_ORIGIN}/finder-preview/pages/feed`;
 const FEED_REQUEST_TYPE = "weixin-channels-video:feed-request";
-const PAIRING_MESSAGE_TYPE = "weixin-channels-video:pair";
 const OFFSCREEN_PARSE_TYPE = "weixin-channels-video:offscreen-parse";
-const OFFSCREEN_READ_PAIRING_TYPE = "weixin-channels-video:offscreen-read-pairing";
-const OFFSCREEN_CLEAR_PAIRING_TYPE = "weixin-channels-video:offscreen-clear-pairing";
 const FEED_RULE_ID = 1;
 const FEED_TIMEOUT_MS = 15_000;
 const FEED_REQUEST_ID_PATTERN = /^[0-9a-f]{1,16}-[0-9a-f]{8}$/;
 const FAILURE_RESULT = { status: 0, body: "", failure: "failed" };
-const PAIRING_STORAGE_KEY = "weixin-channels-video:bridge-session";
-const RETRY_COUNT_STORAGE_KEY = "weixin-channels-video:bridge-retry-count";
-const CONNECTION_STATE_STORAGE_KEY = "weixin-channels-video:bridge-connection-state";
 const RECONNECT_ALARM = "weixin-channels-video:bridge-reconnect";
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_DELAYS_MINUTES = [1, 2, 4, 8, 15];
 const OFFSCREEN_URL = "offscreen.html";
 
 // Each request atomically replaces this rule, so that operation retries cleanup if startup fails.
@@ -213,16 +206,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === PAIRING_MESSAGE_TYPE) {
+  if (message?.type === LOGIN_REFRESH_TYPE) {
     if (
       sender?.id !== chrome.runtime.id ||
       sender.frameId !== 0 ||
       sender.url !== chrome.runtime.getURL("index.html") ||
-      !hasExactKeys(message, ["type", "sessionId"]) ||
-      typeof message.sessionId !== "string" ||
-      !SESSION_ID_PATTERN.test(message.sessionId)
+      !hasExactKeys(message, ["type"])
     ) return;
-    void pairSession(message.sessionId).then(
+    void loginState.refresh().then(
+      (state) => sendResponse({ ok: true, state }),
+      () => sendResponse({ ok: false }),
+    );
+    return true;
+  }
+
+  if (message?.type === AUTH_FAILURE_TYPE) {
+    if (sender?.id !== chrome.runtime.id || sender.frameId !== 0 ||
+        sender.url !== chrome.runtime.getURL("index.html") || !hasExactKeys(message, ["type"])) return;
+    void loginState.markAuthenticationFailure({ code: "AUTH_EXPIRED" }).then(
       () => sendResponse({ ok: true }),
       () => sendResponse({ ok: false }),
     );
@@ -254,7 +255,7 @@ async function ensureOffscreenDocument() {
         await chrome.offscreen.createDocument({
           url: OFFSCREEN_URL,
           reasons: ["IFRAME_SCRIPTING", "LOCAL_STORAGE"],
-          justification: "在后台解析固定元宝接口，并迁移本扩展旧版配对信息。",
+          justification: "在后台通过隐藏框架访问固定元宝解析接口。",
         });
       }
     })().catch((error) => {
@@ -265,17 +266,9 @@ async function ensureOffscreenDocument() {
   return offscreenReady;
 }
 
-function enqueuePairing(operation) {
-  const result = pairingQueue.then(operation);
-  pairingQueue = result.then(() => undefined, () => undefined);
-  return result;
-}
-let pairingQueue = Promise.resolve();
-let restoreInProgress;
 let nativeConnection;
 let nativeRequestQueue = Promise.resolve();
 let nativeConnectionStateQueue = Promise.resolve();
-let requestedPairing;
 
 function setNativeConnectionState(stage, reason) {
   const state = {
@@ -284,7 +277,7 @@ function setNativeConnectionState(stage, reason) {
     ...(reason ? { reason } : {}),
   };
   nativeConnectionStateQueue = nativeConnectionStateQueue.then(() =>
-    chrome.storage.local.set({ [CONNECTION_STATE_STORAGE_KEY]: state })
+    chrome.storage.local.set({ [CONNECTION_STORAGE_KEY]: state })
   ).catch(() => {});
 }
 
@@ -299,26 +292,8 @@ function classifyNativeDisconnect(message) {
   return "host_disconnected";
 }
 
-async function scheduleReconnect(resetRetries = false) {
-  return enqueuePairing(async () => {
-    if (nativeConnection) return;
-    try {
-      if (resetRetries) await chrome.storage.local.set({ [RETRY_COUNT_STORAGE_KEY]: 0 });
-      const stored = await chrome.storage.local.get(RETRY_COUNT_STORAGE_KEY);
-      const attempts = Number.isInteger(stored[RETRY_COUNT_STORAGE_KEY])
-        ? stored[RETRY_COUNT_STORAGE_KEY]
-        : 0;
-      if (attempts >= MAX_RECONNECT_ATTEMPTS) return;
-      const nextAttempt = attempts + 1;
-      await chrome.storage.local.set({ [RETRY_COUNT_STORAGE_KEY]: nextAttempt });
-      await chrome.alarms.clear(RECONNECT_ALARM);
-      await chrome.alarms.create(RECONNECT_ALARM, {
-        delayInMinutes: RECONNECT_DELAYS_MINUTES[nextAttempt - 1],
-      });
-    } catch {
-      // Pairing remains available for the next Chrome startup or explicit CLI connection.
-    }
-  });
+async function scheduleReconnect() {
+  await chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 });
 }
 
 function disconnectNative(connection, reason = "invalid_host_message") {
@@ -330,8 +305,8 @@ function disconnectNative(connection, reason = "invalid_host_message") {
   void scheduleReconnect(connection.ready);
 }
 
-function connectNative(sessionId) {
-  if (nativeConnection?.sessionId === sessionId) {
+function connectNative(instanceId) {
+  if (nativeConnection?.instanceId === instanceId) {
     setNativeConnectionState(nativeConnection.ready ? "host_ready" : "host_starting");
     return;
   }
@@ -349,12 +324,21 @@ function connectNative(sessionId) {
     return;
   }
   setNativeConnectionState("host_starting");
-  const connection = { port, sessionId, ready: false };
+  const connection = { port, instanceId, ready: false };
   nativeConnection = connection;
   port.onMessage.addListener((message) => {
     if (nativeConnection !== connection) return;
     if (message?.type === "ready") {
-      if (!hasExactKeys(message, ["type", "version"]) || message.version !== 1) {
+      if (hasExactKeys(message, ["type", "version"]) && message.version === 1) {
+        disconnectNative(connection, "protocol_unsupported");
+        return;
+      }
+      if (hasExactKeys(message, ["type", "version", "instanceId"]) &&
+          Number.isSafeInteger(message.version) && message.version > 2 && message.instanceId === instanceId) {
+        disconnectNative(connection, "protocol_unsupported");
+        return;
+      }
+      if (!hasExactKeys(message, ["type", "version", "instanceId"]) || message.version !== 2 || message.instanceId !== instanceId) {
         disconnectNative(connection, "invalid_ready_message");
         return;
       }
@@ -375,10 +359,11 @@ function connectNative(sessionId) {
   port.onDisconnect.addListener(() => {
     if (nativeConnection !== connection) return;
     nativeConnection = undefined;
-    setNativeConnectionState("failed", classifyNativeDisconnect(chrome.runtime.lastError?.message));
+    const reason = classifyNativeDisconnect(chrome.runtime.lastError?.message);
+    setNativeConnectionState("failed", reason);
     return scheduleReconnect(connection.ready);
   });
-  try { port.postMessage({ type: "hello", version: 1, sessionId }); }
+  try { port.postMessage({ type: "hello", version: 2, instanceId }); }
   catch { disconnectNative(connection, "host_communication_failed"); }
 }
 
@@ -407,85 +392,37 @@ function workerRequestFactory() {
 const handleAgentCommand = createAgentCommandHandler({
   chromeApi: chrome,
   requestFactory: workerRequestFactory,
+  statusProvider: (options) => loginState.status(options),
+  instanceIdProvider: () => getInstanceId(chrome),
+  onAuthenticationFailure: (error) => loginState.markAuthenticationFailure(error),
   downloadStarter: startTrackedDownload,
   downloadWaiter: waitForDownload,
 });
 
-async function readStoredOrLegacyPairing() {
-  if (requestedPairing) return requestedPairing;
-  const stored = await chrome.storage.local.get(PAIRING_STORAGE_KEY);
-  if (SESSION_ID_PATTERN.test(stored[PAIRING_STORAGE_KEY] ?? "")) return stored[PAIRING_STORAGE_KEY];
+const loginState = createLoginStateManager({ chromeApi: chrome, requestFactory: workerRequestFactory });
+let instanceIdPromise;
 
-  await ensureOffscreenDocument();
-  const legacy = await chrome.runtime.sendMessage({ type: OFFSCREEN_READ_PAIRING_TYPE });
-  if (!legacy || !SESSION_ID_PATTERN.test(legacy.sessionId ?? "")) return undefined;
-  await chrome.storage.local.set({ [PAIRING_STORAGE_KEY]: legacy.sessionId });
-  await chrome.runtime.sendMessage({ type: OFFSCREEN_CLEAR_PAIRING_TYPE, sessionId: legacy.sessionId });
-  return legacy.sessionId;
+async function restoreConnection() {
+  if (!instanceIdPromise) instanceIdPromise = getInstanceId(chrome);
+  const instanceId = await instanceIdPromise;
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) throw new Error("INSTANCE_ID_INVALID");
+  connectNative(instanceId);
 }
 
-async function restoreConnection(resetRetries = false) {
-  if (resetRetries && restoreInProgress) await restoreInProgress;
-  else if (restoreInProgress) return restoreInProgress;
-  let currentRestore;
-  currentRestore = enqueuePairing(async () => {
-    if (resetRetries) {
-      await chrome.storage.local.set({ [RETRY_COUNT_STORAGE_KEY]: 0 });
-      await chrome.alarms.clear(RECONNECT_ALARM);
-    }
-    const sessionId = await readStoredOrLegacyPairing();
-    if (sessionId) connectNative(requestedPairing ?? sessionId);
-  }).catch(() => {}).finally(() => {
-    if (restoreInProgress === currentRestore) restoreInProgress = undefined;
-  });
-  restoreInProgress = currentRestore;
-  return currentRestore;
+async function startBackgroundServices() {
+  await chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 });
+  await restoreConnection();
+  void loginState.start();
 }
 
-async function restoreConnectionAfterWorkerLoad() {
-  try {
-    const [stored, alarm] = await Promise.all([
-      chrome.storage.local.get([PAIRING_STORAGE_KEY, RETRY_COUNT_STORAGE_KEY]),
-      chrome.alarms.get(RECONNECT_ALARM),
-    ]);
-    if (!SESSION_ID_PATTERN.test(stored[PAIRING_STORAGE_KEY] ?? "")) return;
-    const attempts = Number.isInteger(stored[RETRY_COUNT_STORAGE_KEY])
-      ? stored[RETRY_COUNT_STORAGE_KEY]
-      : 0;
-    if (alarm || attempts >= MAX_RECONNECT_ATTEMPTS) return;
-    await restoreConnection();
-  } catch {
-    // Startup and install events still perform a full restore if the state check fails.
-  }
-}
-
-async function pairSession(sessionId) {
-  const previousPairing = requestedPairing;
-  requestedPairing = sessionId;
-  try {
-    return await enqueuePairing(async () => {
-      const pairedSession = requestedPairing ?? sessionId;
-      await chrome.storage.local.set({
-        [PAIRING_STORAGE_KEY]: pairedSession,
-        [RETRY_COUNT_STORAGE_KEY]: 0,
-      });
-      setNativeConnectionState("pairing_saved");
-      await chrome.alarms.clear(RECONNECT_ALARM);
-      connectNative(pairedSession);
-    });
-  } catch (error) {
-    if (requestedPairing === sessionId) requestedPairing = previousPairing;
-    throw error;
-  }
-}
-
-chrome.runtime.onStartup.addListener(() => restoreConnection(true));
-chrome.runtime.onInstalled.addListener(() => restoreConnection(true));
+chrome.runtime.onStartup.addListener(() => { void startBackgroundServices(); });
+chrome.runtime.onInstalled.addListener(() => { void startBackgroundServices(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === RECONNECT_ALARM && !nativeConnection) return restoreConnection();
+  if (alarm.name === RECONNECT_ALARM && !nativeConnection) return void restoreConnection().catch(() => {});
+  if (alarm.name === LOGIN_REFRESH_ALARM) return void loginState.refresh().catch(() => {});
 });
 
-void restoreConnectionAfterWorkerLoad();
+void startBackgroundServices().catch(() => {});
 
 chrome.action.onClicked.addListener(async () => {
   const url = chrome.runtime.getURL("index.html");

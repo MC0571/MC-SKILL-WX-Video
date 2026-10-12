@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,6 +38,7 @@ try {
   const skill = join(destination, "weixin-channels-video");
   assert.match(await readFile(join(skill, "SKILL.md"), "utf8"), /^---/);
   await readFile(join(skill, "references", "agent-installation.md"));
+  assert.equal(existsSync(join(skill, "assets", "extension")), false);
   process.stdout.write("Release Skill ZIP extraction passed.\n");
   if (process.platform === "darwin" || process.platform === "win32") {
     const prepared = spawnSync(process.execPath, [join(skill, "scripts", "run.mjs"), "prepare"], {
@@ -46,7 +48,8 @@ try {
     const result = JSON.parse(prepared.stdout);
     assert.equal(result.minimumNodeVersion, MIN_NODE_VERSION);
     assert.equal(result.runtimeProtocol, RUNTIME_PROTOCOL);
-    assert.equal(JSON.parse(await readFile(join(result.extensionAssets, "manifest.json"), "utf8")).version, version);
+    assert.deepEqual(Object.keys(result).sort(), ["minimumNodeVersion", "runtimeCLI", "runtimeProtocol", "version"]);
+    await readFile(result.runtimeCLI);
     process.stdout.write("Extracted Skill standalone preparation passed.\n");
   }
 } finally {
