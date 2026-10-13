@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LINKS } from "../extension/config.mjs";
-import { initializeEngagementUi, FIRST_OPEN_GUIDE_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY } from "../extension/engagement.mjs";
+import { initializeEngagementUi, REPOSITORY_LINK_CLICKED_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY } from "../extension/engagement.mjs";
 import { initializeDownloadHistoryUi } from "../extension/history-ui.mjs";
 import { createAgentCommandHandler } from "../extension/agent.mjs";
 import { recordSuccessfulParse } from "../extension/engagement.mjs";
@@ -176,7 +176,7 @@ function download(id, { exists = true, state = "complete" } = {}) {
 
 test("engagement UI uses configured links, nudges the first GitHub star, and merges a late initial storage read", async () => {
   const selectors = [
-    "#repository-link", "#privacy-link", "#feedback-link",
+    "#repository-link", "#repository-link-label", "#privacy-link", "#feedback-link",
     "#review-prompt", "#review-link", "#review-dismiss",
   ];
   const documentApi = new FixtureDocument(selectors);
@@ -196,14 +196,15 @@ test("engagement UI uses configured links, nudges the first GitHub star, and mer
   assert.equal(storageListeners.size, 1);
   assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
   initialRead.resolve({
-    [FIRST_OPEN_GUIDE_KEY]: false,
+    [REPOSITORY_LINK_CLICKED_KEY]: false,
     [FIRST_SUCCESSFUL_PARSE_KEY]: -1,
     [REVIEW_PROMPT_HANDLED_KEY]: false,
   });
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(documentApi.querySelector("#repository-link").dataset.starNudge, "true");
-  assert.equal(state[FIRST_OPEN_GUIDE_KEY], true);
+  assert.equal(state[REPOSITORY_LINK_CLICKED_KEY], undefined);
+  assert.equal(documentApi.querySelector("#repository-link-label").textContent, "Star 一下");
   assert.equal(documentApi.querySelector("#review-prompt").hidden, false);
   assert.equal(Number.isFinite(state[FIRST_SUCCESSFUL_PARSE_KEY]), true);
   assert.equal(state[FIRST_SUCCESSFUL_PARSE_KEY], 101);
@@ -212,12 +213,66 @@ test("engagement UI uses configured links, nudges the first GitHub star, and mer
   assert.equal(state[REVIEW_PROMPT_HANDLED_KEY], true);
 });
 
+test("opening the repository with the middle button records the click, while right-click does not", async () => {
+  const documentApi = new FixtureDocument(["#repository-link", "#repository-link-label"]);
+  const { chromeApi, state } = makeChromeApi();
+  initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  const link = documentApi.querySelector("#repository-link");
+  const dispatch = (button) => Promise.all(link.listeners.get("auxclick").map((listener) => listener({ button })));
+
+  await dispatch(2);
+  assert.equal(state[REPOSITORY_LINK_CLICKED_KEY], undefined);
+  assert.equal(link.dataset.starNudge, "true");
+  await dispatch(1);
+  assert.equal(state[REPOSITORY_LINK_CLICKED_KEY], true);
+  assert.equal(link.dataset.starNudge, undefined);
+  assert.equal(documentApi.querySelector("#repository-link-label").textContent, "Github");
+});
+
+test("repository click persists across pages, merges late reads, and does not infer a click from the old first-open flag", async () => {
+  const selectors = ["#repository-link", "#repository-link-label"];
+  const documentApi = new FixtureDocument(selectors);
+  const initialRead = deferred();
+  const { chromeApi, state } = makeChromeApi({ storage: {
+    "weixin-channels-video:first-open-guide-shown": true,
+  } });
+  const normalGet = chromeApi.storage.local.get.bind(chromeApi.storage.local);
+  chromeApi.storage.local.get = () => initialRead.promise;
+  initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await documentApi.querySelector("#repository-link").click();
+  assert.equal(state[REPOSITORY_LINK_CLICKED_KEY], true);
+  initialRead.resolve({ [REPOSITORY_LINK_CLICKED_KEY]: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(documentApi.querySelector("#repository-link-label").textContent, "Github");
+  assert.equal(documentApi.querySelector("#repository-link").dataset.starNudge, undefined);
+
+  chromeApi.storage.local.get = normalGet;
+  const reopened = new FixtureDocument(selectors);
+  initializeEngagementUi({ chromeApi, documentApi: reopened, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reopened.querySelector("#repository-link-label").textContent, "Github");
+  assert.equal(reopened.querySelector("#repository-link").dataset.starNudge, undefined);
+  await chromeApi.storage.local.set({ [REPOSITORY_LINK_CLICKED_KEY]: false });
+  assert.equal(reopened.querySelector("#repository-link-label").textContent, "Star 一下");
+  assert.equal(reopened.querySelector("#repository-link").dataset.starNudge, "true");
+  await documentApi.querySelector("#repository-link").click();
+  assert.equal(reopened.querySelector("#repository-link-label").textContent, "Github");
+
+  const legacy = new FixtureDocument(selectors);
+  const legacyApi = makeChromeApi({ storage: { "weixin-channels-video:first-open-guide-shown": true } });
+  initializeEngagementUi({ chromeApi: legacyApi.chromeApi, documentApi: legacy, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(legacy.querySelector("#repository-link-label").textContent, "Star 一下");
+  assert.equal(legacy.querySelector("#repository-link").dataset.starNudge, "true");
+});
+
 test("page and Agent success events reach the prompt through shared storage; failed parses do not", async () => {
   const documentApi = new FixtureDocument([
     "#repository-link", "#privacy-link", "#feedback-link",
     "#review-prompt", "#review-link", "#review-dismiss",
   ]);
-  const { chromeApi, state } = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
+  const { chromeApi, state } = makeChromeApi({ storage: { [REPOSITORY_LINK_CLICKED_KEY]: true } });
   initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(documentApi.querySelector("#repository-link").dataset.starNudge, undefined);
@@ -248,7 +303,7 @@ test("page and Agent success events reach the prompt through shared storage; fai
     "#repository-link", "#privacy-link", "#feedback-link",
     "#review-prompt", "#review-link", "#review-dismiss",
   ]);
-  const failedApi = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
+  const failedApi = makeChromeApi({ storage: { [REPOSITORY_LINK_CLICKED_KEY]: true } });
   initializeEngagementUi({ chromeApi: failedApi.chromeApi, documentApi: failedFixture, windowApi: new FixtureElement("window") });
   await new Promise((resolve) => setImmediate(resolve));
   const failure = await createAgentCommandHandler({
@@ -271,7 +326,7 @@ for (const action of ["#review-dismiss", "#review-link"]) {
     const { chromeApi, state } = makeChromeApi({
       sourceId: "unpacked-id",
       installType: "development",
-      storage: { [FIRST_OPEN_GUIDE_KEY]: true, [FIRST_SUCCESSFUL_PARSE_KEY]: 12 },
+      storage: { [REPOSITORY_LINK_CLICKED_KEY]: true, [FIRST_SUCCESSFUL_PARSE_KEY]: 12 },
     });
     chromeApi.management.getSelf = async () => { throw new Error("installation source must not be queried"); };
     const windowApi = new FixtureElement("window");

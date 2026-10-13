@@ -37,7 +37,7 @@ function setup({
 } = {}) {
   const selectors = [
     "#bridge-connection-status", "#login-status", "#yuanbao-login-link", "#extension-version",
-    "#agent-instance-id", "#ai-download-prompt-open", "#ai-download-prompt-popover",
+    "#agent-instance-id", "#agent-connection-light", "#ai-download-prompt-open", "#ai-download-prompt-popover",
     "#ai-download-prompt-text", "#ai-download-prompt-copy", "#ai-prompt-copy-status",
     "#ai-download-prompt-copy-label", "#ai-download-prompt-copy-icon", "#ai-download-prompt-copy-success",
   ];
@@ -80,15 +80,42 @@ test("login and bridge snapshots control status, login entry, and browser diagno
   assert.equal(controls.get("#login-status").textContent, "腾讯元宝登录状态检查失败。");
   assert.equal(controls.get("#yuanbao-login-link").hidden, true);
   assert.equal(controls.get("#bridge-connection-status").textContent, "浏览器已连接本地程序。");
+  assert.equal(controls.get("#agent-connection-light").dataset.state, "connected");
+  assert.equal(controls.get("#ai-download-prompt-open").attributes["aria-label"], "Agent 设置，已连接");
   assert.equal(controls.get("#extension-version").textContent, "9.8.7");
   assert.equal(controls.get("#agent-instance-id").textContent, "123e4567");
 
   changes.forEach((listener) => listener({ [LOGIN_STORAGE_KEY]: { newValue: { login: "anonymous", checkedAt: 456 } } }, "local"));
   assert.equal(controls.get("#yuanbao-login-link").hidden, false);
+  assert.equal(controls.get("#login-status").hidden, false);
+  changes.forEach((listener) => listener({ [LOGIN_STORAGE_KEY]: { newValue: { login: "authenticated", checkedAt: 789 } } }, "local"));
+  assert.equal(controls.get("#login-status").hidden, true);
+  assert.equal(controls.get("#yuanbao-login-link").hidden, true);
   changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "host_exited" } } }, "local"));
   assert.equal(controls.get("#bridge-connection-status").textContent, "本地程序已退出，连接未建立或已中断。请让 AI 检查本地桥接。");
+  assert.equal(controls.get("#agent-connection-light").dataset.state, "disconnected");
+  assert.equal(controls.get("#ai-download-prompt-open").attributes["aria-label"], "Agent 设置，未连接");
   changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "protocol_unsupported" } } }, "local"));
   assert.equal(controls.get("#bridge-connection-status").textContent, "扩展与本地程序协议不兼容。请让 AI 更新 Skill。");
+});
+
+test("connection light distinguishes unknown and starting states and rejects stale initial snapshots", async () => {
+  let resolveRead;
+  const read = new Promise((resolve) => { resolveRead = resolve; });
+  const { controls, changes } = setup({ read: () => read });
+  const light = controls.get("#agent-connection-light");
+  const button = controls.get("#ai-download-prompt-open");
+  assert.equal(light.dataset.state, "unknown");
+  assert.equal(button.attributes["aria-label"], "Agent 设置，连接状态尚未确认");
+  changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "host_starting" } } }, "local"));
+  assert.equal(light.dataset.state, "connecting");
+  assert.equal(button.attributes["aria-label"], "Agent 设置，正在连接");
+  resolveRead({ [CONNECTION_STORAGE_KEY]: { version: 1, stage: "host_ready" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(light.dataset.state, "connecting");
+  changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "unknown" } } }, "local"));
+  assert.equal(light.dataset.state, "unknown");
+  assert.equal(controls.get("#bridge-connection-status").hidden, true);
 });
 
 test("prompt copy reports success briefly, resets on repeated clicks, and selects text on failure", async () => {

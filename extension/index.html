@@ -11,11 +11,11 @@
     <main class="shell">
       <header class="page-header">
         <div class="page-title-row">
-          <h1><img class="product-mark" src="./icons/wechat-channels.svg" alt="" aria-hidden="true">视频号下载</h1>
+          <h1><img class="product-mark" src="./icons/wechat-channels.png" alt="" aria-hidden="true">视频号下载</h1>
           <div class="header-actions">
             <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer" title="喜欢这个插件？欢迎到 GitHub 点个 Star">
               <img src="./icons/github.svg" alt="" aria-hidden="true">
-              <span>GitHub</span>
+              <span class="repository-label"><span id="repository-link-label">Star 一下</span><span class="repository-stars" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span></span>
             </a>
             <button
               id="ai-download-prompt-open"
@@ -28,10 +28,11 @@
             >
               <span class="agent-launch-icons" aria-hidden="true">
                 <img src="./icons/agents/chatgpt.svg" alt="">
-                <img src="./icons/agents/claude-code.png" alt="">
+                <img src="./icons/agents/claude.svg" alt="">
                 <img src="./icons/agents/workbuddy.svg" alt="">
               </span>
               <span>Agent 设置</span>
+              <span id="agent-connection-light" class="agent-connection-light" data-state="unknown" aria-hidden="true"></span>
             </button>
           </div>
         </div>

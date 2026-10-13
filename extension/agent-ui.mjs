@@ -63,12 +63,23 @@ function validLoginState(value) {
 
 function initializeBridgeStatus(chromeApi, documentApi) {
   const status = documentApi.querySelector("#bridge-connection-status");
+  const light = documentApi.querySelector("#agent-connection-light");
+  const button = documentApi.querySelector("#ai-download-prompt-open");
   const storage = chromeApi?.storage?.local;
   const changes = chromeApi?.storage?.onChanged;
   if (!status || typeof storage?.get !== "function" || typeof changes?.addListener !== "function") return;
 
   let changeVersion = 0;
   const render = (value) => {
+    const stage = validBridgeState(value) ? value.stage : undefined;
+    const label = ({
+      host_ready: "已连接", host_starting: "正在连接", failed: "未连接",
+    })[stage] ?? "连接状态尚未确认";
+    if (light) light.dataset.state = ({
+      host_ready: "connected", host_starting: "connecting", failed: "disconnected",
+    })[stage] ?? "unknown";
+    button?.setAttribute("aria-label", `Agent 设置，${label}`);
+    button?.setAttribute("title", `Agent 设置：${label}`);
     if (!validBridgeState(value)) {
       status.textContent = "";
       status.hidden = true;
@@ -81,6 +92,7 @@ function initializeBridgeStatus(chromeApi, documentApi) {
     status.hidden = false;
     status.dataset.error = String(value.stage === "failed");
   };
+  render(undefined);
   changes.addListener((items, area) => {
     if (area !== "local" || !Object.hasOwn(items ?? {}, CONNECTION_STORAGE_KEY)) return;
     changeVersion += 1;
@@ -107,7 +119,7 @@ function initializeLoginStatus(chromeApi, windowApi, documentApi) {
       link.hidden = true;
       return;
     }
-    status.hidden = false;
+    status.hidden = value.login === "authenticated";
     link.hidden = value.login !== "anonymous";
     status.textContent = ({
       authenticated: "腾讯元宝：已登录。",
