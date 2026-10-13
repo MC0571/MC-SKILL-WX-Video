@@ -2,7 +2,7 @@
   color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #202321;
-  background: #f7f6f2;
+  background: #ffffff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink-muted: #6c716d;
@@ -26,7 +26,7 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
-  background: #f7f6f2;
+  background: inherit;
 }
 
 button,
@@ -873,7 +873,7 @@ video[hidden] {
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #f5f0e5;
+  background: #fdfdfd;
 }
 
 .review-link {
