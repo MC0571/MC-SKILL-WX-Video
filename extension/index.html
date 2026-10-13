@@ -52,17 +52,32 @@
       >
         <div class="ai-prompt-heading-row">
           <h2 id="ai-prompt-heading">Agent 设置</h2>
-          <button id="ai-download-prompt-copy" class="ai-prompt-copy" type="button" disabled>
-            <img id="ai-download-prompt-copy-icon" src="./icons/copy.svg" alt="" aria-hidden="true">
-            <span id="ai-download-prompt-copy-success" class="copy-success-icon" aria-hidden="true" hidden>✓</span>
-            <span id="ai-download-prompt-copy-label">复制提示词</span>
-          </button>
         </div>
         <p id="ai-prompt-description" class="visually-hidden">
           检查完整提示词后，可复制并粘贴给 Agent；此面板不会自动执行下载。
         </p>
         <textarea id="ai-download-prompt-text" rows="12" readonly aria-label="提示词全文"></textarea>
-        <p id="ai-prompt-copy-status" class="status ai-prompt-copy-status" role="status" aria-live="polite"></p>
+        <sl-alert id="ai-prompt-copy-alert" class="ai-prompt-copy-status" variant="danger" open hidden>
+          <svg slot="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M12 7.5v5.5m0 3h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <strong id="ai-prompt-copy-alert-heading"></strong>
+          <span id="ai-prompt-copy-status"></span>
+        </sl-alert>
+        <button id="ai-download-prompt-copy" class="ai-prompt-copy" type="button" disabled>
+          <span class="copy-feedback-icon" aria-hidden="true">
+            <img id="ai-download-prompt-copy-icon" src="./icons/copy.svg" alt="">
+            <span id="ai-download-prompt-copy-spinner" class="copy-spinner" hidden></span>
+            <span id="ai-download-prompt-copy-success" class="copy-success-icon" hidden>
+              <svg viewBox="0 0 24 24" width="22" height="22">
+                <circle cx="12" cy="12" r="11" fill="currentColor" opacity=".12"/>
+                <path d="m6.5 12 3.5 3.5 7.5-7.5" pathLength="1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+          </span>
+          <span id="ai-download-prompt-copy-label" aria-live="polite" aria-atomic="true">复制提示词</span>
+        </button>
       </div>
 
       <section class="card input-card" aria-label="解析视频号分享链接">

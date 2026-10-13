@@ -190,15 +190,25 @@ function initializePrompt(windowApi, documentApi) {
   const promptText = documentApi.querySelector("#ai-download-prompt-text");
   const copyButton = documentApi.querySelector("#ai-download-prompt-copy");
   const copyStatus = documentApi.querySelector("#ai-prompt-copy-status");
+  const copyAlert = documentApi.querySelector("#ai-prompt-copy-alert");
+  const copyAlertHeading = documentApi.querySelector("#ai-prompt-copy-alert-heading");
   const copyLabel = documentApi.querySelector("#ai-download-prompt-copy-label");
   const copyIcon = documentApi.querySelector("#ai-download-prompt-copy-icon");
+  const spinner = documentApi.querySelector("#ai-download-prompt-copy-spinner");
   const successIcon = documentApi.querySelector("#ai-download-prompt-copy-success");
-  if (!openButton || !popover || !promptText || !copyButton || !copyStatus || !copyLabel || !copyIcon || !successIcon) return;
+  if (!openButton || !popover || !promptText || !copyButton || !copyStatus || !copyAlert || !copyAlertHeading || !copyLabel || !copyIcon || !spinner || !successIcon) return;
+  const setCopyStatus = (message, error = false, heading = "提示词暂不可用") => {
+    copyStatus.textContent = message;
+    copyStatus.dataset.error = String(error);
+    copyAlertHeading.textContent = heading;
+    copyAlertHeading.hidden = !error;
+    copyAlert.variant = error ? "danger" : "neutral";
+    copyAlert.hidden = !message;
+  };
   let identityReady = false;
   copyButton.disabled = true;
   promptText.value = "";
-  copyStatus.textContent = IDENTITY_WAITING;
-  copyStatus.dataset.error = "false";
+  setCopyStatus(IDENTITY_WAITING);
   const updatePosition = () => {
     if (!popover.matches(":popover-open")) return;
     const anchor = openButton.getBoundingClientRect();
@@ -220,40 +230,39 @@ function initializePrompt(windowApi, documentApi) {
   let copiedTimer;
   let copyAttempt = 0;
   const resetCopied = () => {
+    windowApi.clearTimeout(copiedTimer);
+    delete copyButton.dataset.copying;
     delete copyButton.dataset.copied;
+    copyButton.removeAttribute("aria-busy");
     copyLabel.textContent = "复制提示词";
     copyIcon.hidden = false;
+    spinner.hidden = true;
     successIcon.hidden = true;
   };
   const setPromptIdentity = (identity, errorMessage) => {
     copyAttempt += 1;
-    windowApi.clearTimeout(copiedTimer);
     resetCopied();
     identityReady = Boolean(identity);
     copyButton.disabled = !identityReady;
     promptText.value = identity ? buildPrompt(identity) : "";
-    copyStatus.textContent = identity ? "" : errorMessage;
-    copyStatus.dataset.error = String(!identity && errorMessage !== IDENTITY_WAITING);
+    setCopyStatus(identity ? "" : errorMessage, !identity && errorMessage !== IDENTITY_WAITING);
   };
   const showCopied = () => {
     windowApi.clearTimeout(copiedTimer);
+    delete copyButton.dataset.copying;
+    copyButton.removeAttribute("aria-busy");
     copyButton.dataset.copied = "true";
     copyLabel.textContent = "已复制";
     copyIcon.hidden = true;
+    spinner.hidden = true;
     successIcon.hidden = false;
-    copiedTimer = windowApi.setTimeout(() => {
-      delete copyButton.dataset.copied;
-      copyLabel.textContent = "复制提示词";
-      copyIcon.hidden = false;
-      successIcon.hidden = true;
-    }, 2000);
+    copiedTimer = windowApi.setTimeout(resetCopied, 2500);
   };
 
   popover.addEventListener("beforetoggle", (event) => {
     if (event.newState !== "open") return;
     if (identityReady) {
-      copyStatus.textContent = "";
-      copyStatus.dataset.error = "false";
+      setCopyStatus("");
     }
     delete popover.dataset.positioned;
   });
@@ -275,21 +284,27 @@ function initializePrompt(windowApi, documentApi) {
   copyButton.addEventListener("click", async () => {
     if (!identityReady || copyButton.disabled) return;
     const attempt = ++copyAttempt;
-    windowApi.clearTimeout(copiedTimer);
     resetCopied();
+    setCopyStatus("");
+    copyButton.dataset.copying = "true";
+    copyButton.setAttribute("aria-busy", "true");
+    copyIcon.hidden = true;
+    spinner.hidden = false;
+    copyLabel.textContent = "复制中…";
+    const startedAt = windowApi.performance.now();
     try {
       await windowApi.navigator.clipboard.writeText(promptText.value);
       if (attempt !== copyAttempt) return;
-      copyStatus.textContent = "提示词已复制。请切换到 Agent 对话框并自行粘贴。";
-      copyStatus.dataset.error = "false";
-      showCopied();
-      updatePosition();
+      const delay = windowApi.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? 0 : Math.max(0, 500 - (windowApi.performance.now() - startedAt));
+      if (delay > 0) copiedTimer = windowApi.setTimeout(showCopied, delay);
+      else showCopied();
     } catch {
       if (attempt !== copyAttempt) return;
+      resetCopied();
       promptText.focus();
       promptText.select();
-      copyStatus.textContent = "复制失败，全文已选中。请按 Command+C（Mac）或 Ctrl+C（Windows/Linux）手动复制。";
-      copyStatus.dataset.error = "true";
+      setCopyStatus("全文已选中，请按 ⌘C（Mac）或 Ctrl+C（Windows/Linux）手动复制。", true, "自动复制失败");
       updatePosition();
     }
   });

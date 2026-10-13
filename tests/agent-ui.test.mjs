@@ -35,12 +35,13 @@ function setup({
   read = async () => stored,
   extensionId = "abcdefghijklmnopabcdefghijklmnop",
   version = "9.8.7",
+  reducedMotion = false,
 } = {}) {
   const selectors = [
     "#extension-version",
     "#login-status", "#yuanbao-login-link", "#agent-connection-light", "#agent-connection-tooltip", "#ai-download-prompt-open", "#ai-download-prompt-popover",
-    "#ai-download-prompt-text", "#ai-download-prompt-copy", "#ai-prompt-copy-status",
-    "#ai-download-prompt-copy-label", "#ai-download-prompt-copy-icon", "#ai-download-prompt-copy-success",
+    "#ai-download-prompt-text", "#ai-download-prompt-copy", "#ai-prompt-copy-status", "#ai-prompt-copy-alert", "#ai-prompt-copy-alert-heading",
+    "#ai-download-prompt-copy-label", "#ai-download-prompt-copy-icon", "#ai-download-prompt-copy-spinner", "#ai-download-prompt-copy-success",
   ];
   const controls = new Map(selectors.map((selector) => [selector, element()]));
   const changes = [];
@@ -52,6 +53,8 @@ function setup({
     innerWidth: 800,
     innerHeight: 600,
     navigator: { clipboard: { writeText } },
+    performance: { now: () => 0 },
+    matchMedia: () => ({ matches: reducedMotion }),
     addEventListener(type, listener) { windowListeners.set(type, listener); },
     dispatch(type, event) { windowListeners.get(type)?.(event); },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
@@ -70,6 +73,12 @@ function setup({
   };
   initializeAgentUI({ chromeApi, windowApi, documentApi: { querySelector: (selector) => controls.get(selector) } });
   return { controls, changes, messages, timers, windowApi };
+}
+
+function runTimer(timers, delay) {
+  const [id, { callback }] = [...timers].find(([, timer]) => timer.delay === delay);
+  timers.delete(id);
+  callback();
 }
 
 test("title version badge reads the installed extension manifest", () => {
@@ -162,23 +171,84 @@ test("prompt copy reports success briefly, resets on repeated clicks, and select
   assert.equal(controls.get("#ai-download-prompt-text").focused, true);
   assert.equal(openButton.attributes["aria-expanded"], "true");
 
-  await button.dispatch("click");
+  const firstCopy = button.dispatch("click");
+  assert.equal(controls.get("#ai-download-prompt-copy-spinner").hidden, false);
+  assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "复制中…");
+  assert.equal(button.attributes["aria-busy"], "true");
+  await firstCopy;
+  assert.equal(button.dataset.copied, undefined);
+  runTimer(timers, 500);
   assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "已复制");
   assert.equal(controls.get("#ai-download-prompt-copy-success").hidden, false);
-  assert.equal([...timers.values()][0].delay, 2000);
+  assert.equal(controls.get("#ai-download-prompt-copy-spinner").hidden, true);
+  assert.equal(controls.get("#ai-prompt-copy-status").textContent, "");
+  assert.equal(controls.get("#ai-prompt-copy-alert").hidden, true);
+  assert.equal(button.attributes["aria-busy"], undefined);
+  assert.equal([...timers.values()][0].delay, 2500);
   await button.dispatch("click");
   assert.equal(timers.size, 1);
-  const [{ callback }] = timers.values();
-  callback();
+  assert.equal(controls.get("#ai-download-prompt-copy-success").hidden, true);
+  runTimer(timers, 500);
+  assert.equal(button.dataset.copied, "true");
+  runTimer(timers, 2500);
   assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "复制提示词");
+  assert.equal(controls.get("#ai-download-prompt-copy-icon").hidden, false);
+  assert.equal(timers.size, 0);
 
   fail = true;
   await button.dispatch("click");
   assert.equal(controls.get("#ai-prompt-copy-status").dataset.error, "true");
+  assert.equal(controls.get("#ai-prompt-copy-alert").hidden, false);
+  assert.equal(controls.get("#ai-prompt-copy-alert").variant, "danger");
+  assert.equal(controls.get("#ai-prompt-copy-alert-heading").textContent, "自动复制失败");
   assert.equal(controls.get("#ai-download-prompt-text").selected, true);
   assert.equal(controls.get("#ai-download-prompt-copy-success").hidden, true);
+  assert.equal(controls.get("#ai-download-prompt-copy-spinner").hidden, true);
   assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "复制提示词");
+  assert.equal(timers.size, 0);
   assert.equal(windowApi.innerWidth, 800);
+
+  fail = false;
+  await button.dispatch("click");
+  assert.equal(controls.get("#ai-prompt-copy-alert").hidden, true);
+  runTimer(timers, 500);
+  assert.equal(button.dataset.copied, "true");
+});
+
+test("copy feedback waits for the clipboard but adds no delay to a slow write or reduced motion", async () => {
+  let resolveCopy;
+  const { controls, timers, windowApi } = setup({
+    writeText: () => new Promise((resolve) => { resolveCopy = resolve; }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const button = controls.get("#ai-download-prompt-copy");
+  const copying = button.dispatch("click");
+  assert.equal(button.dataset.copied, undefined);
+  assert.equal(timers.size, 0);
+  windowApi.performance.now = () => 800;
+  resolveCopy();
+  await copying;
+  assert.equal(button.dataset.copied, "true");
+  assert.equal([...timers.values()][0].delay, 2500);
+
+  const reduced = setup({ reducedMotion: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  await reduced.controls.get("#ai-download-prompt-copy").dispatch("click");
+  assert.equal(reduced.controls.get("#ai-download-prompt-copy").dataset.copied, "true");
+  assert.equal([...reduced.timers.values()][0].delay, 2500);
+});
+
+test("identity changes cancel a scheduled copy confirmation", async () => {
+  const { controls, changes, timers } = setup();
+  await new Promise((resolve) => setImmediate(resolve));
+  const button = controls.get("#ai-download-prompt-copy");
+  await button.dispatch("click");
+  assert.equal(timers.size, 1);
+  changes.forEach((listener) => listener({ [INSTANCE_STORAGE_KEY]: {} }, "local"));
+  assert.equal(timers.size, 0);
+  assert.equal(button.disabled, true);
+  assert.equal(button.dataset.copying, undefined);
+  assert.equal(controls.get("#ai-download-prompt-copy-spinner").hidden, true);
 });
 
 test("prompt identity follows the selected Chrome instance and never copies while identity is unavailable", async () => {
