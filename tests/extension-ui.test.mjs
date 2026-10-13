@@ -44,7 +44,7 @@ class FixtureDocument {
   constructor(selectors) {
     this.elements = new Map(selectors.map((selector) => [selector, new FixtureElement()]));
     for (const selector of [
-      "#first-open-guide", "#review-prompt", "#recent-download-empty", "#history-view",
+      "#review-prompt", "#recent-download-empty", "#history-view",
       "#download-history-empty", "#history-load-more", "#login-status", "#yuanbao-login-link",
     ]) {
       const element = this.elements.get(selector);
@@ -174,10 +174,10 @@ function download(id, { exists = true, state = "complete" } = {}) {
   };
 }
 
-test("engagement UI uses configured links, records the first guide, and merges a late initial storage read", async () => {
+test("engagement UI uses configured links, nudges the first GitHub star, and merges a late initial storage read", async () => {
   const selectors = [
-    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
-    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+    "#repository-link", "#privacy-link", "#feedback-link",
+    "#review-prompt", "#review-link", "#review-dismiss",
   ];
   const documentApi = new FixtureDocument(selectors);
   const initialRead = deferred();
@@ -187,7 +187,6 @@ test("engagement UI uses configured links, records the first guide, and merges a
 
   initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
   assert.equal(documentApi.querySelector("#repository-link").href, LINKS.repository);
-  assert.equal(documentApi.querySelector("#guide-repository-link").href, LINKS.repository);
   assert.equal(documentApi.querySelector("#privacy-link").href, LINKS.privacy);
   assert.equal(documentApi.querySelector("#feedback-link").href, LINKS.feedback);
   assert.equal(documentApi.querySelector("#review-link").href, LINKS.storeReview);
@@ -203,7 +202,7 @@ test("engagement UI uses configured links, records the first guide, and merges a
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(documentApi.querySelector("#first-open-guide").hidden, false);
+  assert.equal(documentApi.querySelector("#repository-link").dataset.starNudge, "true");
   assert.equal(state[FIRST_OPEN_GUIDE_KEY], true);
   assert.equal(documentApi.querySelector("#review-prompt").hidden, false);
   assert.equal(Number.isFinite(state[FIRST_SUCCESSFUL_PARSE_KEY]), true);
@@ -215,12 +214,13 @@ test("engagement UI uses configured links, records the first guide, and merges a
 
 test("page and Agent success events reach the prompt through shared storage; failed parses do not", async () => {
   const documentApi = new FixtureDocument([
-    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
-    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+    "#repository-link", "#privacy-link", "#feedback-link",
+    "#review-prompt", "#review-link", "#review-dismiss",
   ]);
   const { chromeApi, state } = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
   initializeEngagementUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(documentApi.querySelector("#repository-link").dataset.starNudge, undefined);
   assert.equal(documentApi.querySelector("#review-prompt").hidden, true);
 
   const video = {
@@ -245,8 +245,8 @@ test("page and Agent success events reach the prompt through shared storage; fai
   assert.equal(state[FIRST_SUCCESSFUL_PARSE_KEY], firstSuccessAt);
 
   const failedFixture = new FixtureDocument([
-    "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
-    "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+    "#repository-link", "#privacy-link", "#feedback-link",
+    "#review-prompt", "#review-link", "#review-dismiss",
   ]);
   const failedApi = makeChromeApi({ storage: { [FIRST_OPEN_GUIDE_KEY]: true } });
   initializeEngagementUi({ chromeApi: failedApi.chromeApi, documentApi: failedFixture, windowApi: new FixtureElement("window") });
@@ -265,8 +265,8 @@ test("page and Agent success events reach the prompt through shared storage; fai
 for (const action of ["#review-dismiss", "#review-link"]) {
   test(`review prompt ignores installation source and stays handled after ${action}`, async () => {
     const documentApi = new FixtureDocument([
-      "#repository-link", "#guide-repository-link", "#privacy-link", "#feedback-link",
-      "#first-open-guide", "#first-open-guide-dismiss", "#review-prompt", "#review-link", "#review-dismiss",
+      "#repository-link", "#privacy-link", "#feedback-link",
+      "#review-prompt", "#review-link", "#review-dismiss",
     ]);
     const { chromeApi, state } = makeChromeApi({
       sourceId: "unpacked-id",
@@ -280,7 +280,6 @@ for (const action of ["#review-dismiss", "#review-link"]) {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(documentApi.querySelector("#review-prompt").hidden, false);
     assert.equal(documentApi.querySelector("#review-link").href, LINKS.storeReview);
-    assert.equal(documentApi.querySelector("#first-open-guide").hidden, true);
     assert.equal(documentApi.querySelector("#feedback-link").hidden, false);
     await documentApi.querySelector(action).click();
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -370,14 +369,21 @@ test("missing download rows remain gray with precise status, and failed reveal r
   } });
   initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
   await new Promise((resolve) => setImmediate(resolve));
+  const recentRows = documentApi.querySelector("#recent-download-list").children[0].children[1].children;
+  const recentMissingRow = recentRows.find((row) => row.dataset.fileMissing === "true");
+  assert.equal(recentMissingRow.children[1].textContent, "文件已移除或移动");
+  assert.equal(recentMissingRow.children[1].tagName, "span");
+
   await documentApi.querySelector("#open-download-history").click();
   await new Promise((resolve) => setImmediate(resolve));
 
   const firstSectionList = documentApi.querySelector("#download-history-list").children[0].children[1];
   const missingRow = firstSectionList.children.find((row) => row.dataset.fileMissing === "true");
   assert.ok(missingRow);
-  assert.equal(missingRow.children[0].children.at(-1).textContent, "文件已移除或移动");
-  assert.equal(missingRow.children.length, 1);
+  assert.equal(missingRow.children[0].children.length, 2);
+  assert.equal(missingRow.children[1].textContent, "文件已移除或移动");
+  assert.equal(missingRow.children[1].tagName, "span");
+  assert.equal(missingRow.children.length, 2);
 
   const existingRow = firstSectionList.children.find((row) => row.dataset.fileMissing === "false");
   const revealButton = existingRow.children.at(-1);

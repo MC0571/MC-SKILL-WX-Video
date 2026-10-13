@@ -35,9 +35,18 @@ input {
 }
 
 .shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
   width: min(100% - 40px, 880px);
   margin: 0 auto;
   padding: 44px 0 48px;
+}
+
+#home-view,
+.history-view {
+  flex: 1 0 auto;
 }
 
 .page-header {
@@ -66,7 +75,25 @@ h1 {
 }
 
 .page-title-row h1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 0;
+}
+
+.product-mark {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+}
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-inline-start: auto;
 }
 
 h2 {
@@ -85,7 +112,6 @@ h2 {
   line-height: 1.55;
 }
 
-#first-open-guide a,
 .update-card a {
   color: #353934;
   font-weight: 650;
@@ -197,7 +223,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   padding-inline: 10px;
   border-color: transparent;
   background: transparent;
@@ -214,6 +240,38 @@ button:disabled {
   display: block;
   width: 16px;
   height: 16px;
+}
+
+.agent-launch-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.agent-launch-icons img {
+  width: 17px;
+  height: 17px;
+  object-fit: contain;
+}
+
+#repository-link[data-star-nudge="true"] {
+  position: relative;
+}
+
+#repository-link[data-star-nudge="true"]::after {
+  position: absolute;
+  top: -0.55em;
+  right: -0.6em;
+  color: var(--green);
+  content: "★";
+  pointer-events: none;
+  animation: repository-star-nudge 1100ms ease-out 1 both;
+}
+
+@keyframes repository-star-nudge {
+  0% { opacity: 0; transform: translateY(4px) scale(.7); }
+  22% { opacity: 1; transform: translateY(0) scale(1.08); }
+  100% { opacity: 0; transform: translateY(-10px) scale(.9); }
 }
 
 .status {
@@ -314,33 +372,6 @@ button:disabled {
   font-size: 18px;
   font-weight: 650;
   letter-spacing: -.02em;
-}
-
-.ai-agent-icons {
-  --agent-icon-size: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0;
-  min-width: 0;
-}
-
-.ai-agent-icons img {
-  position: relative;
-  display: block;
-  flex: 0 0 auto;
-  width: var(--agent-icon-size);
-  height: var(--agent-icon-size);
-  margin-inline-start: calc(var(--agent-icon-size) * -0.4);
-  padding: 2px;
-  border: 2px solid #1c1c1c;
-  border-radius: 50%;
-  background: #2b2b2b;
-  object-fit: contain;
-}
-
-.ai-agent-icons img:first-child {
-  margin-inline-start: 0;
 }
 
 .ai-prompt-popover textarea {
@@ -589,41 +620,54 @@ video[hidden] {
 }
 
 .repository-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
   color: #353934;
   font-size: 13px;
   font-weight: 650;
+  white-space: nowrap;
   text-underline-offset: 3px;
 }
 
-.inline-guide,
+.repository-link img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 .inline-review-prompt {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin: 0 0 14px;
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #f0f2ed;
-}
-
-.inline-guide h2 {
-  margin: 0 0 4px;
-  font-size: 14px;
-}
-
-.inline-guide p,
-.inline-review-prompt p {
-  margin: 0;
-  color: #4e514b;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.inline-review-prompt {
-  align-items: center;
   background: #f5f0e5;
+}
+
+.review-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 44px;
+  color: #353934;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-underline-offset: 3px;
+}
+
+#review-dismiss {
+  min-height: 44px;
+  color: #666b67;
+  font-size: 12px;
+  font-weight: 400;
+  text-decoration: none;
 }
 
 .inline-actions {
@@ -723,6 +767,10 @@ video[hidden] {
   color: #595e58;
 }
 
+.download-history-action-status {
+  flex: 0 0 auto;
+}
+
 .history-reveal-button {
   flex: 0 0 auto;
   min-height: 36px;
@@ -771,7 +819,7 @@ video[hidden] {
   flex-wrap: wrap;
   align-items: center;
   gap: 18px;
-  margin: 24px 2px 0;
+  margin: auto 2px 0;
   padding-top: 14px;
   border-top: 1px solid var(--line);
   color: var(--ink-muted);
@@ -801,7 +849,10 @@ video[hidden] {
     width: 100%;
   }
 
-  .inline-guide,
+  .header-actions {
+    width: 100%;
+  }
+
   .inline-review-prompt {
     flex-direction: column;
     gap: 8px;
@@ -865,10 +916,6 @@ video[hidden] {
     padding-top: 11px;
   }
 
-  .ai-agent-icons {
-    --agent-icon-size: 28px;
-  }
-
   .section-heading-row {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -881,6 +928,11 @@ video[hidden] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  #repository-link[data-star-nudge="true"]::after {
+    animation: none;
+    content: none;
+  }
+
   *,
   *::before,
   *::after {

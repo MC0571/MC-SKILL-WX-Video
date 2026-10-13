@@ -67,7 +67,7 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   details.append(name, metadata);
 
   const location = fileLocationLabel(item);
-  if (location) {
+  if (location && item.exists !== false) {
     const note = documentApi.createElement("span");
     note.className = "download-history-location";
     note.textContent = location;
@@ -75,7 +75,12 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   }
 
   row.append(details);
-  if (item.state === "complete" && item.exists !== false) {
+  if (location && item.exists === false) {
+    const unavailable = documentApi.createElement("span");
+    unavailable.className = "download-history-location download-history-action-status";
+    unavailable.textContent = location;
+    row.append(unavailable);
+  } else if (item.state === "complete") {
     const revealButton = documentApi.createElement("button");
     revealButton.type = "button";
     revealButton.className = "secondary-button history-reveal-button";

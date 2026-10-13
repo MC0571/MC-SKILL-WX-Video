@@ -22,17 +22,13 @@ export function initializeEngagementUi({
   if (!documentApi?.querySelector) return null;
 
   const repositoryLink = documentApi.querySelector("#repository-link");
-  const guideRepositoryLink = documentApi.querySelector("#guide-repository-link");
   const privacyLink = documentApi.querySelector("#privacy-link");
   const feedbackLink = documentApi.querySelector("#feedback-link");
   if (repositoryLink) repositoryLink.href = LINKS.repository;
-  if (guideRepositoryLink) guideRepositoryLink.href = LINKS.repository;
   if (privacyLink) privacyLink.href = LINKS.privacy;
   if (feedbackLink && LINKS.feedback) feedbackLink.href = LINKS.feedback;
   if (feedbackLink && !LINKS.feedback) feedbackLink.hidden = true;
 
-  const guide = documentApi.querySelector("#first-open-guide");
-  const guideDismiss = documentApi.querySelector("#first-open-guide-dismiss");
   const reviewPrompt = documentApi.querySelector("#review-prompt");
   const reviewLink = documentApi.querySelector("#review-link");
   const reviewDismiss = documentApi.querySelector("#review-dismiss");
@@ -64,9 +60,6 @@ export function initializeEngagementUi({
     }
   };
 
-  guideDismiss?.addEventListener("click", () => {
-    if (guide) guide.hidden = true;
-  });
   reviewLink?.addEventListener("click", () => {
     windowApi?.setTimeout?.(() => { void markReviewHandled(); }, 0);
   });
@@ -97,8 +90,8 @@ export function initializeEngagementUi({
     if (!active) return;
     currentState = { ...stored, ...changedState };
     stateLoaded = true;
-    if (guide && currentState[FIRST_OPEN_GUIDE_KEY] !== true) {
-      guide.hidden = false;
+    if (repositoryLink && currentState[FIRST_OPEN_GUIDE_KEY] !== true) {
+      repositoryLink.dataset.starNudge = "true";
       currentState[FIRST_OPEN_GUIDE_KEY] = true;
       void storage.set({ [FIRST_OPEN_GUIDE_KEY]: true }).catch(() => {});
     }
