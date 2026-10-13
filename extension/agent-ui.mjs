@@ -1,11 +1,17 @@
+import { initializeUpdateUi } from "./update-ui.mjs";
+
 import {
   CONNECTION_STORAGE_KEY,
   INSTANCE_STORAGE_KEY,
   LOGIN_REFRESH_TYPE,
   LOGIN_STORAGE_KEY,
 } from "./agent-state.mjs";
+import { INSTANCE_ID_PATTERN } from "../src/native-messaging.mjs";
 
 const BRIDGE_STAGES = new Set(["host_starting", "host_ready", "failed"]);
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+const IDENTITY_WAITING = "正在准备安装提示词，请稍候。";
+const IDENTITY_READ_FAILED = "暂时无法准备安装提示词，请重新打开插件页。";
 const BRIDGE_REASONS = new Set([
   "connect_native_failed", "host_not_found", "host_not_registered", "host_start_failed",
   "host_access_forbidden", "host_exited", "host_communication_failed", "host_disconnected",
@@ -30,11 +36,16 @@ const BRIDGE_FAILURES = Object.freeze({
   protocol_unsupported: "扩展与本地程序协议不兼容。请让 AI 更新 Skill。",
 });
 
-const PROMPT = [
-  "扩展已安装。请先阅读并遵守安装指引：https://github.com/MC0571/weixin-channels-video/blob/main/skills/weixin-channels-video/references/agent-installation.md",
-  "确认当前宿主能否访问装有扩展的目标 Chrome 用户，再按宿主官方入口安装或复用完整 Skill。尽量在后台复用已有浏览器；扩展缺失时默认引导安装 Chrome Web Store 版本，只有我明确选择时才使用非商店版。",
-  "按 Skill 配置桥接，以 Agent 与扩展真实通信往返成功为准。需要我选择 Chrome 用户、首次打开浏览器或完成系统授权时再交接；完成后报告连接结果并停止。本次不要求我登录元宝，也不要求解析或下载视频。",
-].join("\n");
+function buildPrompt({ extensionId, instanceId }) {
+  return [
+    "扩展已安装。此提示词来自用户当前选定的 Chrome 用户，身份如下：",
+    `当前扩展 ID：${extensionId}`,
+    `当前扩展实例 UUID：${instanceId}`,
+    "请先阅读并遵守安装指引：https://github.com/MC0571/weixin-channels-video/blob/main/skills/weixin-channels-video/references/agent-installation.md",
+    "按宿主官方入口安装或复用完整 Skill，再按 Skill 指引使用上述身份检查或修复桥接。复制这份提示词代表用户选择了这个 Chrome 用户，不要改选其他实例。",
+    "以 Agent 与扩展真实通信往返成功为准；完成后用普通语言简短报告连接与元宝登录状态及下一步。若指引要求我完成权限或其他人工操作，只交接那一步并停止。",
+  ].join("\n");
+}
 
 function validBridgeState(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
@@ -121,9 +132,11 @@ function initializeLoginStatus(chromeApi, windowApi, documentApi) {
   catch { /* A closed or unavailable extension runtime cannot refresh this snapshot. */ }
 }
 
-function initializeAgentIdentity(chromeApi, documentApi) {
+function initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity) {
   const version = documentApi.querySelector("#extension-version");
   const instance = documentApi.querySelector("#agent-instance-id");
+  const extensionId = chromeApi?.runtime?.id;
+  const validExtensionId = typeof extensionId === "string" && EXTENSION_ID_PATTERN.test(extensionId);
   try {
     const manifestVersion = chromeApi?.runtime?.getManifest?.()?.version;
     if (version) version.textContent = typeof manifestVersion === "string" && manifestVersion ? manifestVersion : "unknown";
@@ -131,12 +144,41 @@ function initializeAgentIdentity(chromeApi, documentApi) {
     if (version) version.textContent = "unknown";
   }
   const storage = chromeApi?.storage?.local;
-  if (instance && typeof storage?.get === "function") {
-    Promise.resolve().then(() => storage.get(INSTANCE_STORAGE_KEY)).then((stored) => {
-      const id = stored?.[INSTANCE_STORAGE_KEY];
-      instance.textContent = typeof id === "string" && id.length >= 8 ? id.slice(0, 8) : "暂不可用";
-    }).catch(() => { instance.textContent = "暂不可用"; });
+  const changes = chromeApi?.storage?.onChanged;
+  const render = (id, errorMessage) => {
+    const validInstanceId = typeof id === "string" && INSTANCE_ID_PATTERN.test(id);
+    if (instance) instance.textContent = validInstanceId ? id.slice(0, 8) : errorMessage ? "暂不可用" : "检查中";
+    if (validExtensionId && validInstanceId) {
+      setPromptIdentity?.({ extensionId, instanceId: id });
+    } else {
+      setPromptIdentity?.(undefined, !validExtensionId
+        ? IDENTITY_READ_FAILED
+        : errorMessage ?? (id === undefined ? IDENTITY_WAITING : IDENTITY_READ_FAILED));
+    }
+  };
+  if (!validExtensionId) {
+    render(undefined, IDENTITY_READ_FAILED);
+    return;
   }
+  if (typeof storage?.get !== "function" || typeof changes?.addListener !== "function") {
+    render(undefined, IDENTITY_READ_FAILED);
+    return;
+  }
+  let changeVersion = 0;
+  changes.addListener((items, area) => {
+    if (area !== "local" || !Object.hasOwn(items ?? {}, INSTANCE_STORAGE_KEY)) return;
+    changeVersion += 1;
+    render(items[INSTANCE_STORAGE_KEY].newValue,
+      items[INSTANCE_STORAGE_KEY].newValue === undefined ? undefined : IDENTITY_READ_FAILED);
+  });
+  const initialChangeVersion = changeVersion;
+  Promise.resolve().then(() => storage.get(INSTANCE_STORAGE_KEY)).then((stored) => {
+    if (initialChangeVersion !== changeVersion) return;
+    const id = stored?.[INSTANCE_STORAGE_KEY];
+    render(id, id === undefined ? undefined : IDENTITY_READ_FAILED);
+  }).catch(() => {
+    if (initialChangeVersion === changeVersion) render(undefined, IDENTITY_READ_FAILED);
+  });
 }
 
 function initializePrompt(windowApi, documentApi) {
@@ -149,8 +191,11 @@ function initializePrompt(windowApi, documentApi) {
   const copyIcon = documentApi.querySelector("#ai-download-prompt-copy-icon");
   const successIcon = documentApi.querySelector("#ai-download-prompt-copy-success");
   if (!openButton || !popover || !promptText || !copyButton || !copyStatus || !copyLabel || !copyIcon || !successIcon) return;
-  promptText.value = PROMPT;
-
+  let identityReady = false;
+  copyButton.disabled = true;
+  promptText.value = "";
+  copyStatus.textContent = IDENTITY_WAITING;
+  copyStatus.dataset.error = "false";
   const updatePosition = () => {
     if (!popover.matches(":popover-open")) return;
     const anchor = openButton.getBoundingClientRect();
@@ -177,6 +222,16 @@ function initializePrompt(windowApi, documentApi) {
     copyIcon.hidden = false;
     successIcon.hidden = true;
   };
+  const setPromptIdentity = (identity, errorMessage) => {
+    copyAttempt += 1;
+    windowApi.clearTimeout(copiedTimer);
+    resetCopied();
+    identityReady = Boolean(identity);
+    copyButton.disabled = !identityReady;
+    promptText.value = identity ? buildPrompt(identity) : "";
+    copyStatus.textContent = identity ? "" : errorMessage;
+    copyStatus.dataset.error = String(!identity && errorMessage !== IDENTITY_WAITING);
+  };
   const showCopied = () => {
     windowApi.clearTimeout(copiedTimer);
     copyButton.dataset.copied = "true";
@@ -193,8 +248,10 @@ function initializePrompt(windowApi, documentApi) {
 
   popover.addEventListener("beforetoggle", (event) => {
     if (event.newState !== "open") return;
-    copyStatus.textContent = "";
-    copyStatus.dataset.error = "false";
+    if (identityReady) {
+      copyStatus.textContent = "";
+      copyStatus.dataset.error = "false";
+    }
     delete popover.dataset.positioned;
   });
   popover.addEventListener("toggle", (event) => {
@@ -213,6 +270,7 @@ function initializePrompt(windowApi, documentApi) {
   windowApi.addEventListener("resize", updatePosition);
   windowApi.addEventListener("scroll", updatePosition, true);
   copyButton.addEventListener("click", async () => {
+    if (!identityReady || copyButton.disabled) return;
     const attempt = ++copyAttempt;
     windowApi.clearTimeout(copiedTimer);
     resetCopied();
@@ -232,6 +290,7 @@ function initializePrompt(windowApi, documentApi) {
       updatePosition();
     }
   });
+  return setPromptIdentity;
 }
 
 export function initializeAgentUI({
@@ -242,6 +301,7 @@ export function initializeAgentUI({
   if (!documentApi?.querySelector) return;
   initializeBridgeStatus(chromeApi, documentApi);
   initializeLoginStatus(chromeApi, windowApi, documentApi);
-  initializeAgentIdentity(chromeApi, documentApi);
-  initializePrompt(windowApi, documentApi);
+  const setPromptIdentity = initializePrompt(windowApi, documentApi);
+  initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity);
+  initializeUpdateUi({ documentApi, chromeApi });
 }

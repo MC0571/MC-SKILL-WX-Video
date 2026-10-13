@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -88,6 +88,76 @@ test("profile diagnosis checks the directory without requiring Local State metad
       state: "exists",
       extension: "unknown",
     });
+  });
+});
+
+test("profile inspection preserves access-denied state without exposing filesystem details", async () => {
+  const denied = Object.assign(new Error("private path"), { code: "EACCES" });
+  const profile = await inspectChromeProfile({
+    profileDirectory: "Profile 2",
+    userDataDir: "/private/Chrome User Data",
+    extensionId: EXTENSION_ID,
+    lstatImpl: async () => { throw denied; },
+  });
+  assert.deepEqual(profile, { state: "access_denied", extension: "unknown" });
+
+  const result = await diagnoseEnvironment({
+    configuration: "configured",
+    config: { profileDirectory: "Profile 2", chromeUserDataDir: "/private/Chrome User Data", extensionId: EXTENSION_ID },
+    sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+  }, {
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectProfile: async () => profile,
+    inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" }),
+    readConnections: async () => [],
+  });
+  assert.equal(result.profile.state, "access_denied");
+  assert.deepEqual(result.actions, ["open_chrome_extensions"]);
+  assert.equal(JSON.stringify(result).includes("EACCES"), false);
+  assert.equal(JSON.stringify(result).includes("/private/Chrome User Data"), false);
+});
+
+test("profile inspection stops after a preferences access denial and hands off one action", async () => {
+  await withChromeProfile(async ({ userDataDir, profileDirectory }) => {
+    const profilePath = join(userDataDir, profileDirectory);
+    const securePreferencesPath = join(profilePath, "Secure Preferences");
+    const preferencesPath = join(profilePath, "Preferences");
+    const settings = JSON.stringify({ extensions: { settings: { [EXTENSION_ID]: { state: 1 } } } });
+    await writeFile(securePreferencesPath, settings);
+    await writeFile(preferencesPath, settings);
+
+    for (const code of ["EPERM", "EACCES"]) {
+      const denied = Object.assign(new Error("private path"), { code });
+      const inspectedPaths = [];
+      const profile = await inspectChromeProfile({
+        profileDirectory,
+        userDataDir,
+        extensionId: EXTENSION_ID,
+        lstatImpl: async (path) => { inspectedPaths.push(path); return lstat(path); },
+        readFileImpl: async (path, encoding) => {
+          inspectedPaths.push(path);
+          if (path === securePreferencesPath) throw denied;
+          return readFile(path, encoding);
+        },
+      });
+      assert.deepEqual(profile, { state: "access_denied", extension: "unknown" });
+      assert.equal(inspectedPaths.includes(preferencesPath), false);
+
+      const result = await diagnoseEnvironment({
+        configuration: "configured",
+        config: { profileDirectory, chromeUserDataDir: userDataDir, extensionId: EXTENSION_ID },
+        sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+      }, {
+        inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+        inspectRunning: () => "running",
+        inspectProfile: async () => profile,
+        inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "valid" }),
+        readSelection: async () => null,
+        readConnections: async () => [],
+        waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "ignored"); },
+      });
+      assert.deepEqual(result.actions, ["open_chrome_extensions"]);
+    }
   });
 });
 
@@ -338,13 +408,14 @@ test("diagnosis preserves native connection failures", async () => {
 });
 
 test("an authenticated bridge stays connected without metadata-based recovery actions", async () => {
+  let profileInspections = 0;
   const result = await diagnoseEnvironment({
     configuration: "configured",
     config: { profileDirectory: "Profile 2", chromeUserDataDir: "/private/Chrome User Data", extensionId: EXTENSION_ID },
     sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
   }, {
     inspectChrome: () => ({ installation: "installed", version: "154.0.8037.98", compatibility: "supported" }),
-    inspectProfile: async () => ({ state: "unknown", extension: "unknown" }),
+    inspectProfile: async () => { profileInspections += 1; return { state: "unknown", extension: "unknown" }; },
     inspectBridge: async () => ({ registration: "valid", host: "present", launcher: "valid", node: "available", session: "available", security: "unknown" }),
     readSelection: async () => null,
     readConnections: async () => [{ instanceId: "423e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
@@ -353,6 +424,8 @@ test("an authenticated bridge stays connected without metadata-based recovery ac
   assert.deepEqual(result.connection, { state: "connected", instanceId: "423e4567-e89b-42d3-a456-426614174000", login: "authenticated", checkedAt: 100 });
   assert.deepEqual(result.actions, []);
   assert.equal(result.nextAction, undefined);
+  assert.equal(profileInspections, 0);
+  assert.deepEqual(result.profile, { state: "unknown" });
 });
 
 test("profile-less diagnosis reports bridge repairs without suggesting legacy pairing", async () => {
@@ -672,7 +745,7 @@ test("failed Chrome launch reports a safe start error", async () => {
   assert.equal(errors[0].includes("private launch detail"), false);
 });
 
-test("profile-less connect launches Chrome once when stopped and never relaunches a running instance", async () => {
+test("profile-less connect never launches Chrome and asks the user to open the registered Chrome user", async () => {
   const errors = [];
   let launches = 0;
   const code = await runCli(["connect"], {
@@ -683,11 +756,13 @@ test("profile-less connect launches Chrome once when stopped and never relaunche
     readConnections: async () => [],
     inspectRunning: () => "not_running",
     launch: async () => { launches += 1; },
-    connectionWaitMs: 0,
+    waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "ignored"); },
+    connectionWaitMs: 100,
   });
   assert.equal(code, 1);
-  assert.equal(launches, 1);
-  assert.match(errors[0], /日常使用的 Chrome/);
+  assert.equal(launches, 0);
+  assert.match(errors[0], /CHROME_PROFILE_REQUIRED/);
+  assert.match(errors[0], /手动打开 Chrome/);
   assert.equal(errors[0].includes("install-bridge --profile"), false);
 
   launches = 0;
@@ -699,7 +774,8 @@ test("profile-less connect launches Chrome once when stopped and never relaunche
     readConnections: async () => [],
     inspectRunning: () => "running",
     launch: async () => { launches += 1; },
-    connectionWaitMs: 0,
+    waitForLegacyBridge: async () => { throw new BridgeError("BRIDGE_DISCONNECTED", "ignored"); },
+    connectionWaitMs: 1,
   }), 1);
   assert.equal(launches, 0);
 });

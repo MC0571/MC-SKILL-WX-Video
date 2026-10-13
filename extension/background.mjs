@@ -3,17 +3,25 @@ import { INSTANCE_ID_PATTERN, NATIVE_HOST_NAME, validateBridgeCommand } from "..
 import { createExtensionRequest, PAGE_DOWNLOAD_TYPE, safeFilename, startDownload, waitForDownload } from "./app.mjs";
 import { createAgentCommandHandler } from "./agent.mjs";
 import { AUTH_FAILURE_TYPE, CONNECTION_STORAGE_KEY, LOGIN_REFRESH_ALARM, LOGIN_REFRESH_TYPE, createLoginStateManager, getInstanceId } from "./agent-state.mjs";
+import {
+  UPDATE_ACTION_TYPE,
+  UPDATE_STATE_TYPE,
+  createUpdateStateManager,
+} from "./update-state.mjs";
+import { recordSuccessfulParse } from "./engagement.mjs";
 
 const CHANNELS_ORIGIN = "https://channels.weixin.qq.com";
 const CHANNELS_FEED_PAGE_URL = `${CHANNELS_ORIGIN}/finder-preview/pages/feed`;
 const FEED_REQUEST_TYPE = "weixin-channels-video:feed-request";
 const OFFSCREEN_PARSE_TYPE = "weixin-channels-video:offscreen-parse";
+const PAGE_PARSE_TYPE = "weixin-channels-video:page-parse";
 const FEED_RULE_ID = 1;
 const FEED_TIMEOUT_MS = 15_000;
 const FEED_REQUEST_ID_PATTERN = /^[0-9a-f]{1,16}-[0-9a-f]{8}$/;
 const FAILURE_RESULT = { status: 0, body: "", failure: "failed" };
 const RECONNECT_ALARM = "weixin-channels-video:bridge-reconnect";
 const OFFSCREEN_URL = "offscreen.html";
+const PAGE_PARSE_COMMAND_ID = "00000000-0000-4000-8000-000000000000";
 
 // Each request atomically replaces this rule, so that operation retries cleanup if startup fails.
 const initialRuleCleanup = chrome.declarativeNetRequest.updateSessionRules({
@@ -21,9 +29,70 @@ const initialRuleCleanup = chrome.declarativeNetRequest.updateSessionRules({
 }).catch(() => undefined);
 let feedRequestQueue = Promise.resolve();
 const requestedFilenames = new Map();
+const activeDownloadIds = new Set();
+const updateState = createUpdateStateManager({ chromeApi: chrome });
+let activeBusinessTasks = 0;
+let updateReloadBarrier = false;
+let checkingUpdateApplication = false;
+
+function beginBusinessTask() {
+  if (updateReloadBarrier) return null;
+  activeBusinessTasks += 1;
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    activeBusinessTasks -= 1;
+    void maybeApplyStoreUpdate();
+  };
+}
+
+async function hasActiveExtensionDownload() {
+  if (activeDownloadIds.size) return true;
+  const items = await chrome.downloads.search({ state: "in_progress" });
+  return items.some((item) => item.byExtensionId === chrome.runtime.id);
+}
+
+async function maybeApplyStoreUpdate() {
+  if (checkingUpdateApplication || updateReloadBarrier) return false;
+  checkingUpdateApplication = true;
+  try {
+    const state = await updateState.getState();
+    if (state.source !== "store" || !state.availableVersion) return false;
+    const pageContexts = await chrome.runtime.getContexts({
+      contextTypes: ["TAB"],
+      documentUrls: [chrome.runtime.getURL("index.html")],
+    });
+    if ((pageContexts.length && !state.applyRequested) || activeBusinessTasks || await hasActiveExtensionDownload()) return false;
+
+    // Set the gate synchronously before awaiting cleanup so no new business task can enter.
+    updateReloadBarrier = true;
+    if (activeBusinessTasks || activeDownloadIds.size) {
+      updateReloadBarrier = false;
+      return false;
+    }
+    const connection = nativeConnection;
+    nativeConnection = undefined;
+    if (connection) {
+      try { connection.port.disconnect(); }
+      catch { /* The port may already be disconnected. */ }
+    }
+    await chrome.alarms.clear(RECONNECT_ALARM);
+    try {
+      chrome.runtime.reload();
+      return true;
+    } catch (error) {
+      updateReloadBarrier = false;
+      throw error;
+    }
+  } finally {
+    checkingUpdateApplication = false;
+  }
+}
 
 async function startTrackedDownload(result, chromeApi = chrome, filename = safeFilename(result.title)) {
   const downloadId = await startDownload(result, chromeApi, filename);
+  activeDownloadIds.add(downloadId);
   requestedFilenames.set(downloadId, filename);
   return downloadId;
 }
@@ -39,9 +108,17 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   suggest({ filename, conflictAction: "uniquify" });
 });
 
+chrome.downloads.onCreated.addListener((item) => {
+  if (item.byExtensionId === chrome.runtime.id && item.state === "in_progress") {
+    activeDownloadIds.add(item.id);
+  }
+});
+
 chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state?.current === "complete" || delta.state?.current === "interrupted") {
     requestedFilenames.delete(delta.id);
+    activeDownloadIds.delete(delta.id);
+    void maybeApplyStoreUpdate();
   }
 });
 
@@ -190,6 +267,36 @@ function queueFeedRequest(request) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === UPDATE_STATE_TYPE) {
+    if (sender?.id !== chrome.runtime.id || sender.frameId !== 0 ||
+        sender.url !== chrome.runtime.getURL("index.html") || !hasExactKeys(message, ["type"])) return;
+    void updateState.getState().then(sendResponse, () => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message?.type === UPDATE_ACTION_TYPE) {
+    if (sender?.id !== chrome.runtime.id || sender.frameId !== 0 ||
+        sender.url !== chrome.runtime.getURL("index.html") ||
+        !hasExactKeys(message, ["type", "action"]) ||
+        !["apply", "later", "acknowledge-updated"].includes(message.action)) return;
+    const finishTask = beginBusinessTask();
+    if (!finishTask) {
+      sendResponse({ ok: false });
+      return;
+    }
+    const action = message.action === "apply" ? updateState.apply
+      : message.action === "later" ? updateState.later
+        : updateState.acknowledgeUpdated;
+    void action().then((state) => {
+      try { sendResponse(state); }
+      finally { finishTask(); }
+    }, () => {
+      try { sendResponse({ ok: false }); }
+      finally { finishTask(); }
+    });
+    return true;
+  }
+
   if (message?.type === PAGE_DOWNLOAD_TYPE) {
     if (
       sender?.id !== chrome.runtime.id ||
@@ -199,9 +306,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       typeof message.filename !== "string" ||
       typeof message.downloadUrl !== "string"
     ) return;
+    const finishTask = beginBusinessTask();
+    if (!finishTask) {
+      sendResponse({ ok: false });
+      return;
+    }
     void startTrackedDownload({ downloadUrl: message.downloadUrl }, chrome, message.filename).then(
-      () => sendResponse({ ok: true }),
-      () => sendResponse({ ok: false }),
+      () => { try { sendResponse({ ok: true }); } finally { finishTask(); } },
+      () => { try { sendResponse({ ok: false }); } finally { finishTask(); } },
+    );
+    return true;
+  }
+
+  if (message?.type === PAGE_PARSE_TYPE) {
+    if (
+      sender?.id !== chrome.runtime.id ||
+      sender.frameId !== 0 ||
+      sender.url !== chrome.runtime.getURL("index.html") ||
+      !hasExactKeys(message, ["type", "url"]) ||
+      typeof message.url !== "string" ||
+      !message.url.trim()
+    ) return;
+    const finishTask = beginBusinessTask();
+    if (!finishTask) {
+      sendResponse({ ok: false, error: { code: "UPDATE_PENDING", message: "插件正在安全应用更新，请稍后重试。" } });
+      return;
+    }
+    void handleAgentCommand({ id: PAGE_PARSE_COMMAND_ID, command: "parse", url: message.url }, { source: "page" }).then(
+      (response) => {
+        try {
+          sendResponse(response.ok ? { ok: true, result: response.result } : { ok: false, error: response.error });
+        } finally { finishTask(); }
+      },
+      () => {
+        try { sendResponse({ ok: false, error: { code: "UPSTREAM_ERROR", message: "解析请求失败。" } }); }
+        finally { finishTask(); }
+      },
     );
     return true;
   }
@@ -238,7 +378,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   ) return;
   const request = validateFeedRequest(message);
   if (!request) return;
-  void queueFeedRequest(request).then(sendResponse, () => sendResponse(FAILURE_RESULT));
+  const finishTask = beginBusinessTask();
+  if (!finishTask) {
+    sendResponse(FAILURE_RESULT);
+    return;
+  }
+  void queueFeedRequest(request).then(
+    (result) => { try { sendResponse(result); } finally { finishTask(); } },
+    () => { try { sendResponse(FAILURE_RESULT); } finally { finishTask(); } },
+  );
   return true;
 });
 
@@ -293,6 +441,7 @@ function classifyNativeDisconnect(message) {
 }
 
 async function scheduleReconnect() {
+  if (updateReloadBarrier) return;
   await chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 });
 }
 
@@ -302,10 +451,11 @@ function disconnectNative(connection, reason = "invalid_host_message") {
   setNativeConnectionState("failed", reason);
   try { connection.port.disconnect(); }
   catch { /* A disconnected Native Messaging port has no further work to do. */ }
-  void scheduleReconnect(connection.ready);
+  if (!updateReloadBarrier) void scheduleReconnect(connection.ready);
 }
 
 function connectNative(instanceId) {
+  if (updateReloadBarrier) return;
   if (nativeConnection?.instanceId === instanceId) {
     setNativeConnectionState(nativeConnection.ready ? "host_ready" : "host_starting");
     return;
@@ -350,11 +500,24 @@ function connectNative(instanceId) {
       disconnectNative(connection, "invalid_host_message");
       return;
     }
-    nativeRequestQueue = nativeRequestQueue.then(async () => {
-      if (nativeConnection !== connection) return;
-      const response = await handleAgentCommand(message);
-      if (nativeConnection === connection) connection.port.postMessage(response);
-    }).catch(() => disconnectNative(connection, "host_communication_failed"));
+    const finishTask = beginBusinessTask();
+    if (!finishTask) return;
+    const operation = nativeRequestQueue.then(async () => {
+      if (nativeConnection !== connection) {
+        finishTask();
+        return;
+      }
+      try {
+        const response = await handleAgentCommand(message, { source: "agent" });
+        if (nativeConnection === connection) connection.port.postMessage(response);
+      } finally {
+        finishTask();
+      }
+    });
+    nativeRequestQueue = operation.catch(() => {
+      finishTask();
+      disconnectNative(connection, "host_communication_failed");
+    });
   });
   port.onDisconnect.addListener(() => {
     if (nativeConnection !== connection) return;
@@ -395,6 +558,7 @@ const handleAgentCommand = createAgentCommandHandler({
   statusProvider: (options) => loginState.status(options),
   instanceIdProvider: () => getInstanceId(chrome),
   onAuthenticationFailure: (error) => loginState.markAuthenticationFailure(error),
+  onParseSuccess: () => recordSuccessfulParse(chrome),
   downloadStarter: startTrackedDownload,
   downloadWaiter: waitForDownload,
 });
@@ -403,6 +567,7 @@ const loginState = createLoginStateManager({ chromeApi: chrome, requestFactory: 
 let instanceIdPromise;
 
 async function restoreConnection() {
+  if (updateReloadBarrier) return;
   if (!instanceIdPromise) instanceIdPromise = getInstanceId(chrome);
   const instanceId = await instanceIdPromise;
   if (!INSTANCE_ID_PATTERN.test(instanceId)) throw new Error("INSTANCE_ID_INVALID");
@@ -410,13 +575,20 @@ async function restoreConnection() {
 }
 
 async function startBackgroundServices() {
+  await updateState.installed({ reason: "startup" });
   await chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 });
   await restoreConnection();
   void loginState.start();
 }
 
 chrome.runtime.onStartup.addListener(() => { void startBackgroundServices(); });
-chrome.runtime.onInstalled.addListener(() => { void startBackgroundServices(); });
+chrome.runtime.onInstalled.addListener((details) => {
+  void updateState.installed(details).then(() => startBackgroundServices());
+});
+chrome.runtime.onUpdateAvailable.addListener((details) => {
+  void updateState.updateAvailable(details.version).then(() => maybeApplyStoreUpdate());
+});
+chrome.tabs.onRemoved.addListener(() => { void maybeApplyStoreUpdate(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === RECONNECT_ALARM && !nativeConnection) return void restoreConnection().catch(() => {});
   if (alarm.name === LOGIN_REFRESH_ALARM) return void loginState.refresh().catch(() => {});

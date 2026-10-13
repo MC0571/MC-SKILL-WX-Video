@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { MIN_NODE_VERSION, RUNTIME_PROTOCOL } from "../skills/weixin-channels-video/scripts/runtime-support.mjs";
 import { windowsPowerShellBuiltinModuleImport, windowsPowerShellPath } from "../skills/weixin-channels-video/scripts/windows-security.mjs";
 
-const version = JSON.parse(await readFile(new URL("../extension/manifest.json", import.meta.url), "utf8")).version;
+const version = JSON.parse(await readFile(new URL("../skills/weixin-channels-video/version.json", import.meta.url), "utf8")).version;
 const archive = resolve(process.argv[2] ?? join("dist", "release", `weixin-channels-video-skill-v${version}.zip`));
 const root = await mkdtemp(join(tmpdir(), "wcv-release-zip-"));
 const destination = join(root, "unpacked");
@@ -37,6 +37,7 @@ try {
   assert.equal(unpack.status, 0, "Skill ZIP must extract with the platform archive tool");
   const skill = join(destination, "weixin-channels-video");
   assert.match(await readFile(join(skill, "SKILL.md"), "utf8"), /^---/);
+  assert.equal(JSON.parse(await readFile(join(skill, "version.json"), "utf8")).version, version);
   await readFile(join(skill, "references", "agent-installation.md"));
   assert.equal(existsSync(join(skill, "assets", "extension")), false);
   process.stdout.write("Release Skill ZIP extraction passed.\n");

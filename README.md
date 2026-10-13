@@ -21,14 +21,18 @@
 - **商店安装（默认）**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。商店版本可能晚于 GitHub Release；以 Chrome 当前安装版本和实际界面为准。
 - **非商店安装（需明确选择）**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip`，并按同一 Release 的 `SHA256SUMS` 核验；也可按[构建说明](docs/architecture.md#构建与发布)从源码构建。将 ZIP 解压到会持续保留的位置，再在 `chrome://extensions` 启用开发者模式并加载该目录。不要把扩展放进 Skill 缓存；移动目录可能改变扩展 ID。开发者模式只用于此非商店安装方式。
 
+商店安装版在 Chrome 确认更新已下载后显示提示；选择立即更新时，会等当前任务和扩展下载结束再安全应用。非商店版低频检查公开的稳定 `extension-v…` Release，有更新时只提醒手动更新；检查结果未知时不会称为最新版。GitHub 发布或提交商店审核不代表 Chrome Web Store 已发布该版本，商店版以 Chrome 实际提供的更新为准。
+
 1. 在安装扩展的 Chrome 用户中登录 [腾讯元宝](https://yuanbao.tencent.com/)。
 2. 点击扩展图标，在打开的页面中粘贴分享链接并解析。
 3. 预览视频，查看封面、标题、作者和各版本下载链接。
 4. 点击所需版本下载。页面会显示完成或中断；关闭页面不会取消 Chrome 已启动的下载。
 
-视频保存位置遵循 Chrome 下载设置，重名时自动改名。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
+扩展页还会列出最近 5 条本扩展下载，并可按本地日期查看完整记录、定位仍存在的文件；Chrome 中已清除的记录也会从列表移除。首次打开时会显示一次项目支持引导；首次成功解析后，会显示可关闭的一次性商店评价提示，不区分安装来源。页面底部提供隐私政策与飞书问题和建议表单入口，表单需由用户自行填写和提交。
 
-标题区的“Agent 设置”可打开完整安装提示词。提示词不包含扩展 ID；AI 会安装 Skill，并在注册桥接时使用你当前选定扩展的实际 ID。
+视频保存位置遵循 Chrome 下载设置。默认文件名是清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`）；显式相对 `.mp4` 文件名按原路径传给 Chrome，重名时由 Chrome 自动追加后缀。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
+
+标题区的“Agent 设置”可打开完整安装提示词，其中会自动填入当前 Chrome 用户的实际扩展 ID 和稳定实例 UUID。把提示词交给目标 Agent 即表示选定这个 Chrome 用户；AI 会按 Skill 指引检查或修复桥接并连接该实例，不需要手动查找或复制 ID。
 
 ![Agent 设置](docs/images/agent-settings.jpg)
 
@@ -42,7 +46,7 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 
 先检查目标目录没有同名 Skill 或本地修改；已有内容时使用宿主官方更新入口，不自动覆盖。其他 Agent 按 reference 中对应的官方导入方式安装完整文件夹与资源。
 
-也可以从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载完整 Skill 包，再按目标 Agent 的官方方式导入。Skill 包包含 `SKILL.md`、`scripts/`、`references/` 和运行资源，不包含 Chrome 扩展。
+也可以从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `skill-v…` 完整 Skill 包，再按目标 Agent 的官方方式导入。Skill 包包含 `SKILL.md`、`scripts/`、`references/` 和运行资源，不包含 Chrome 扩展。非商店扩展包使用独立的 `extension-v…` Release；Skill 与扩展版本分别维护，版本不同本身不代表不兼容，运行时按协议检查兼容性。
 
 安装后可直接把分享链接交给 AI：
 
@@ -51,20 +55,32 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-需要自己操作时，在安装后的 Skill 目录执行：
+如果收到的是旧提示词且没有扩展 ID 或实例 UUID，先在目标 Chrome 用户的“Agent 设置”中重新复制。无法重新复制旧提示词时，才手动打开该用户的 `chrome://extensions`，找到本扩展并打开“详情”，复制当前扩展 ID；旧桥接配置不能证明当前安装的 ID。在安装后的 Skill 目录先检查并连接：
 
 ```sh
 node scripts/run.mjs prepare
-node scripts/run.mjs install-bridge --extension-id '替换为当前扩展ID'
-node scripts/run.mjs connections
-node scripts/run.mjs connect
+node scripts/run.mjs connect --extension-id '粘贴同一扩展 ID'
+```
+
+只有 `connect` 明确报告 `BRIDGE_NOT_CONFIGURED` 或 `BRIDGE_EXTENSION_MISMATCH` 时，才用该 Chrome 用户的实际 ID 更新桥接，然后重试 `connect`：
+
+```sh
+node scripts/run.mjs install-bridge --extension-id '粘贴当前扩展 ID'
+node scripts/run.mjs connect --extension-id '粘贴同一扩展 ID'
+```
+
+连接成功后再查看状态或下载：
+
+```sh
 node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
 ```
 
-扩展与 Skill 独立安装和更新。扩展缺失时默认引导安装 Chrome Web Store 版本；只有你明确选择非商店版时，才使用独立 Release ZIP 或源码构建产物。安装 Skill 和桥接后，通过 `connect` 确认一次与扩展的真实往返即可完成准备；不要求先登录元宝、解析或下载。Chrome 扩展在后台自动发现桥接并恢复连接；不需要打开或保留扩展页面。
+扩展与 Skill 独立安装和更新。扩展缺失时默认引导安装 Chrome Web Store 版本；只有你明确选择非商店版时，才使用独立 Release ZIP 或源码构建产物。安装 Skill 和桥接后，通过 `connect` 确认一次与扩展的真实往返即可完成准备；不要求先登录元宝、解析或下载。Chrome 扩展在后台自动发现桥接并恢复连接；不需要打开或保留扩展页面。常规连接不需要读取 Chrome profile 元数据。若用户明确选择 profile，可在登记桥接时提供 `--profile`；CLI 只会在 Chrome 明确未运行且该 profile 已确认时后台启动一次，状态未知或 profile 未确认时请手动打开所选 Chrome 用户。完整连接及失败处理按 [Skill 指引](skills/weixin-channels-video/SKILL.md)执行。
 
-`connections` 只列出已认证且实际响应 status 的在线扩展实例，不等待元宝网络。唯一候选可用于本次任务；有多个时通过 `connect --instance <UUID>` 明确选择并持久绑定。绑定的实例离线时不会自动切换到另一个 Chrome 用户。登录状态以扩展维护的五分钟 snapshot 为准：明确匿名时停止任务并请用户登录，检查失败或状态未知不会误报成未登录，也不作为连接失败。下载按标题命名，重名自动改名；命令等待 Chrome 确认完成后才报告成功。任务提交后断连或超时不会自动重发。完整连接、登录与下载规则见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+`connections` 仅列出已认证且实际响应 status 的在线扩展实例。多个候选时，按用户选择通过 `connect --instance <UUID>` 指定；绑定实例离线时不会自动切换到另一 Chrome 用户。下载默认使用清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`），显式相对 `.mp4` 文件名按原路径传递，重名时由 Chrome 自动追加后缀；命令等待 Chrome 确认完成后才报告成功。任务提交后断连或超时不会自动重发。登录状态报告和失败时的下一步见 [Skill 指引](skills/weixin-channels-video/SKILL.md)。
+
+连接失败时按 Skill 指引处理，不要循环等待或反复重启、重装。
 
 ## 自部署 API
 

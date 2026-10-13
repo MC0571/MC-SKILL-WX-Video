@@ -16,6 +16,11 @@ const extensionOutput = join(dist, 'extension');
 const skillOutput = join(dist, 'weixin-channels-video');
 const releaseOutput = join(dist, 'release');
 const releasePackage = process.argv.includes('--release');
+const componentIndex = process.argv.indexOf('--component');
+const releaseComponent = componentIndex < 0 ? 'both' : process.argv[componentIndex + 1];
+if (!['both', 'extension', 'skill'].includes(releaseComponent)) throw new Error('Invalid release component.');
+const buildExtension = releaseComponent === 'both' || releaseComponent === 'extension';
+const buildSkill = releaseComponent === 'both' || releaseComponent === 'skill';
 
 const EXTENSION_ASSETS = [
   'manifest.json',
@@ -40,65 +45,78 @@ const EXTENSION_ASSETS = [
   'icons/agents/trae.png',
 ];
 
-const manifest = JSON.parse(await readFile(join(extensionSource, 'manifest.json'), 'utf8'));
-validateChromeVersion(manifest.version);
+const manifest = buildExtension
+  ? JSON.parse(await readFile(join(extensionSource, 'manifest.json'), 'utf8'))
+  : null;
+const skillVersion = buildSkill
+  ? JSON.parse(await readFile(join(skill, 'version.json'), 'utf8')).version
+  : null;
+if (manifest) validateChromeVersion(manifest.version);
+if (skillVersion) validateChromeVersion(skillVersion);
 
-await rm(extensionOutput, { recursive: true, force: true });
-await rm(skillOutput, { recursive: true, force: true });
-await mkdir(join(skillOutput, 'scripts'), { recursive: true });
-await cp(join(skill, 'SKILL.md'), join(skillOutput, 'SKILL.md'));
-await cp(join(root, 'LICENSE'), join(skillOutput, 'LICENSE'));
-await cp(join(root, 'NOTICE.md'), join(skillOutput, 'NOTICE.md'));
-await cp(join(skill, 'scripts/run.mjs'), join(skillOutput, 'scripts/run.mjs'));
-await cp(join(skill, 'scripts/runtime-support.mjs'), join(skillOutput, 'scripts/runtime-support.mjs'));
-await cp(join(skill, 'scripts/windows-security.mjs'), join(skillOutput, 'scripts/windows-security.mjs'));
-try {
-  await access(join(skill, 'references'));
-  await cp(join(skill, 'references'), join(skillOutput, 'references'), { recursive: true });
-} catch (error) {
-  if (error.code !== 'ENOENT') throw error;
+if (buildSkill) {
+  await rm(skillOutput, { recursive: true, force: true });
+  await mkdir(join(skillOutput, 'scripts'), { recursive: true });
+  await cp(join(skill, 'SKILL.md'), join(skillOutput, 'SKILL.md'));
+  await cp(join(skill, 'version.json'), join(skillOutput, 'version.json'));
+  await cp(join(root, 'LICENSE'), join(skillOutput, 'LICENSE'));
+  await cp(join(root, 'NOTICE.md'), join(skillOutput, 'NOTICE.md'));
+  await cp(join(skill, 'scripts/run.mjs'), join(skillOutput, 'scripts/run.mjs'));
+  await cp(join(skill, 'scripts/runtime-support.mjs'), join(skillOutput, 'scripts/runtime-support.mjs'));
+  await cp(join(skill, 'scripts/windows-security.mjs'), join(skillOutput, 'scripts/windows-security.mjs'));
+  try {
+    await access(join(skill, 'references'));
+    await cp(join(skill, 'references'), join(skillOutput, 'references'), { recursive: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  await writeFile(join(skillOutput, 'runtime.json'), `${JSON.stringify({
+    version: skillVersion,
+    runtimeProtocol: RUNTIME_PROTOCOL,
+    minimumNodeVersion: MIN_NODE_VERSION,
+  }, null, 2)}\n`);
+  await build({
+    entryPoints: [join(skill, 'scripts/cli.mjs')],
+    outfile: join(skillOutput, 'scripts/cli.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node22',
+    define: { __WCV_VERSION__: JSON.stringify(skillVersion) },
+  });
+  await build({
+    entryPoints: [join(root, 'src/native-host.mjs')],
+    outfile: join(skillOutput, 'scripts/native-host.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node22',
+    define: { __WCV_VERSION__: JSON.stringify(skillVersion) },
+  });
 }
-await writeFile(join(skillOutput, 'runtime.json'), `${JSON.stringify({
-  version: manifest.version,
-  runtimeProtocol: RUNTIME_PROTOCOL,
-  minimumNodeVersion: MIN_NODE_VERSION,
-}, null, 2)}\n`);
-await build({
-  entryPoints: [join(skill, 'scripts/cli.mjs')],
-  outfile: join(skillOutput, 'scripts/cli.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22',
-  define: { __WCV_VERSION__: JSON.stringify(manifest.version) },
-});
-await build({
-  entryPoints: [join(root, 'src/native-host.mjs')],
-  outfile: join(skillOutput, 'scripts/native-host.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22',
-  define: { __WCV_VERSION__: JSON.stringify(manifest.version) },
-});
-await build({
-  entryPoints: [join(extensionSource, 'background.mjs')],
-  outfile: join(extensionSource, 'background.js'),
-  bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
-});
-await build({
-  entryPoints: [join(extensionSource, 'agent.mjs')],
-  outfile: join(extensionSource, 'agent.js'),
-  bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
-});
-await build({
-  entryPoints: [join(extensionSource, 'offscreen.mjs')],
-  outfile: join(extensionSource, 'offscreen.js'),
-  bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
-});
-await rm(join(extensionSource, 'app.js'), { force: true });
-await copyExtensionAssets(extensionOutput);
-await cp(join(root, 'LICENSE'), join(extensionOutput, 'LICENSE'));
-await cp(join(root, 'NOTICE.md'), join(extensionOutput, 'NOTICE.md'));
+
+if (buildExtension) {
+  await rm(extensionOutput, { recursive: true, force: true });
+  await build({
+    entryPoints: [join(extensionSource, 'background.mjs')],
+    outfile: join(extensionSource, 'background.js'),
+    bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
+  });
+  await build({
+    entryPoints: [join(extensionSource, 'agent.mjs')],
+    outfile: join(extensionSource, 'agent.js'),
+    bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
+  });
+  await build({
+    entryPoints: [join(extensionSource, 'offscreen.mjs')],
+    outfile: join(extensionSource, 'offscreen.js'),
+    bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
+  });
+  await rm(join(extensionSource, 'app.js'), { force: true });
+  await copyExtensionAssets(extensionOutput);
+  await cp(join(root, 'LICENSE'), join(extensionOutput, 'LICENSE'));
+  await cp(join(root, 'NOTICE.md'), join(extensionOutput, 'NOTICE.md'));
+}
 
 if (releasePackage) {
+  await rm(releaseOutput, { recursive: true, force: true });
   const { stdout, stderr } = await execFileAsync('python3', [
     join(root, 'scripts/package-release.py'),
-    '--output-dir', releaseOutput,
+    '--output-dir', releaseOutput, '--component', releaseComponent,
   ], { cwd: root });
   process.stdout.write(stdout);
   process.stderr.write(stderr);

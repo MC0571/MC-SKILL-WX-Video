@@ -38,11 +38,12 @@ export function createAgentCommandHandler({
   statusProvider,
   instanceIdProvider = async () => "unknown",
   onAuthenticationFailure = () => {},
+  onParseSuccess = async () => {},
   parser = parseShareLink,
   downloadStarter = startDownload,
   downloadWaiter = waitForDownload,
 } = {}) {
-  return async (request) => {
+  return async (request, { source = "agent" } = {}) => {
     if (!validateBridgeCommand(request)) {
       return { id: request?.id, ok: false, error: { code: "INVALID_COMMAND", message: BRIDGE_ERROR_MESSAGES.INVALID_COMMAND } };
     }
@@ -68,9 +69,11 @@ export function createAgentCommandHandler({
         };
       }
 
-      const video = await parser(request.url, { request: requestFactory() });
+      const video = projectVideoResult(await parser(request.url, { request: requestFactory() }));
+      try { await onParseSuccess({ source }); }
+      catch { /* Parse success remains valid if optional engagement storage is unavailable. */ }
       if (request.command === "parse") {
-        return { id: request.id, ok: true, result: projectVideoResult(video) };
+        return { id: request.id, ok: true, result: video };
       }
 
       let downloadId;
@@ -98,7 +101,7 @@ export function createAgentCommandHandler({
         id: request.id,
         ok: true,
         result: {
-          ...projectVideoResult(video),
+          ...video,
           state: download.state,
           path: download.path,
           bytes: download.bytes,

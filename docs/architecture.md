@@ -59,7 +59,7 @@ flowchart TB
 
 Skill 使用外部 Node.js 运行。普通 Skill 用户最低 Node.js 版本是 22.22.2，由 `skills/weixin-channels-video/scripts/runtime-support.mjs` 提供；开发、测试和 Worker 构建工具要求 Node.js 24+。实际 Agent、OS、Shell、架构、运行位置和 Chrome 可达性见 [Agent 安装说明](../skills/weixin-channels-video/references/agent-installation.md)。Skill 页面流程只写共享操作；宿主导入、Windows/WSL 以及扩展安装方式由该 reference 维护。
 
-从仓库安装的 Skill 通过 `scripts/run.mjs prepare` 获取正式 Release 的运行资源，校验 SHA256、归档路径及 runtime package protocol 3 后缓存。若没有已发布且兼容 protocol 3 的资源，准备应准确报告不兼容并停止；不能将旧正式 Release 当成可用的新资源。普通 CLI 命令复用兼容缓存，首次没有缓存时自动准备；独立 Skill Release 包包含运行资源，可离线准备。Skill 包含 CLI、Native Messaging host 和运行资源，不含 Chrome 扩展。CLI / host / 扩展分别报告从实际握手取得的版本；缺少版本信息时返回 `unknown`。运行资源 protocol 3、Native Messaging wire protocol 2、IPC protocol 2 分别管理。IPC protocol 2 使用私有 HMAC secret；旧的 runtime cache 保留，不迁移或删除。
+从仓库安装的 Skill 通过 `scripts/run.mjs prepare` 从稳定 `skill-v…` Releases 选择运行资源，校验 SHA256、归档路径、runtime protocol 及最低 Node 版本后缓存。扩展 Release 不提供 Skill 资源；没有兼容 Skill Release 时准确停止并保留已有缓存。独立 Skill Release 包含运行资源，可离线准备。Skill 包含 CLI、Native Messaging host 和运行资源，不含 Chrome 扩展。CLI / host / 扩展版本仅用于追溯，兼容性由运行资源、Native Messaging wire 和 IPC 协议契约决定。运行资源 protocol 3、Native Messaging wire protocol 2、IPC protocol 2 独立管理；IPC protocol 2 使用私有 HMAC secret。
 
 扩展首次启动时，在自身 `storage.local` 中生成并保存稳定 UUID。每个扩展实例注册独立私有 endpoint 和 discovery record，避免多个 Chrome profile 共用一个可被错误选中的桥接状态。Native Messaging host 登记实际扩展 ID 到 `allowed_origins`，并在运行时按同一扩展 ID 校验 `origin`。实例 UUID 是本机选择标识，不是配对凭据；IPC HMAC secret 保留在用户私有存储中，不通过 Native Messaging 或 IPC 帧传输，也不写日志。
 
@@ -113,7 +113,7 @@ Skill 包放到宿主的技能目录。例如 Codex 用户级目录为 `~/.agent
 
 ### 版本包与自动发布
 
-[`Releases`](https://github.com/MC0571/weixin-channels-video/releases) 分别提供扩展 ZIP、独立 Skill TAR.GZ / ZIP 和 `SHA256SUMS`。扩展 ZIP 与 Skill 更新独立；只有用户明确选择非商店扩展时才下载 ZIP，核验同一 Release 的 `SHA256SUMS`，解压至 Skill 缓存之外且持续保留的位置，再通过 Chrome 开发者模式加载。Skill 包解压后只有一个 `weixin-channels-video/` 目录，安装与桥接步骤见 [README](../README.md#ai-skill)。
+[`Releases`](https://github.com/MC0571/weixin-channels-video/releases) 使用 `extension-v<版本>` 和 `skill-v<版本>` 标签分别发布组件，各自携带自己的 SHA256SUMS。Skill 版本唯一来源是 `skills/weixin-channels-video/version.json`，扩展版本来源是 `extension/manifest.json`。只有用户明确选择非商店扩展时才下载 `extension-v…` ZIP，核验同一扩展 Release 的 SHA256SUMS，解压至 Skill 缓存之外且持续保留的位置，再通过 Chrome 开发者模式加载。Skill 包解压后只有一个 `weixin-channels-video/` 目录，安装与桥接步骤见 [README](../README.md#ai-skill)。
 
 本地生成发布包需要 Node.js 24+ 和 Python 3（只使用标准库）：
 
@@ -122,16 +122,16 @@ npm ci
 npm run release:package
 ```
 
-版本来自 `extension/manifest.json`，输出到 `dist/release/`：
+版本分别来自 `extension/manifest.json` 与 `skills/weixin-channels-video/version.json`，完整本地打包输出到 `dist/release/`：
 
 - `weixin-channels-video-extension-v<版本>.zip`
 - `weixin-channels-video-skill-v<版本>.tar.gz`
 - `weixin-channels-video-skill-v<版本>.zip`
 - `SHA256SUMS`
 
-更新版本时同步 `package.json` 和 lockfile 的包版本。合并包含 manifest 变更的提交到 main 后，Release 工作流先执行仓库检查，再创建对应提交的 GitHub Release，并将扩展上传 Chrome Web Store 送审；审核通过后自动上线。也可从 main 手动运行工作流。默认模式要求相同版本的 Release 复用同一提交，已有资产不会被覆盖；商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。
+扩展 manifest 更新会触发扩展 Release 和 Chrome Web Store 流程；Skill 版本文件更新会单独打包并发布 Skill Release，不触发商店流程。Release 资产不可覆盖。扩展 Release 工作流可手动重试已有提交的商店送审；商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。GitHub 发布或送审不代表商店已经更新，实际商店版本以 Chrome 安装与桥接报告为准。
 
-已有 GitHub Release、商店提交因前一版本审核或校验失败而中止时，在 main 手动运行 Release 并启用 `submit_existing_release`。该模式使用当前 manifest 版本，要求正式 Release 和全部资产已存在，重新构建的三个归档及 `SHA256SUMS` 必须与已发布资产逐字节相同，之后才向商店提交。它允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
+已有扩展 GitHub Release、商店提交因前一版本审核或校验失败而中止时，在 main 手动运行扩展 Release 并启用 `submit_existing_release`。该模式使用当前 manifest 版本，要求正式 `extension-v…` Release 和扩展 ZIP、`SHA256SUMS` 均已存在，重新构建的资产必须与已发布资产逐字节相同，之后才向商店提交。它允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
 商店条目可从 README 的 [Chrome Web Store 安装入口](../README.md#chrome-扩展)打开。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。工作流成功表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
 

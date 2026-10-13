@@ -18,6 +18,17 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const DISCONNECTED_SOCKET_CODES = new Set(["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE"]);
 
+function assertWithinDeadline(deadline, now) {
+  if (deadline !== undefined && deadline - now() <= 0) {
+    throw new BridgeError("BRIDGE_TIMEOUT", BRIDGE_ERROR_MESSAGES.BRIDGE_TIMEOUT);
+  }
+}
+
+function boundedTimeout(timeoutMs, deadline, now) {
+  assertWithinDeadline(deadline, now);
+  return deadline === undefined ? timeoutMs : Math.min(timeoutMs, deadline - now());
+}
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -202,11 +213,17 @@ export async function discoverBridgeConnections(config, sessionInfo, {
   waitForLegacyBridge = waitForBridge,
   refreshLogin = false,
   probeLegacy = true,
+  deadline,
+  now = Date.now,
+  sleep,
 } = {}) {
+  assertWithinDeadline(deadline, now);
   const records = await readConnections(config, sessionInfo);
+  assertWithinDeadline(deadline, now);
   const active = [];
   const currentRecords = records.filter((record) => record.nativeProtocol === 2);
   for (const record of currentRecords) {
+    assertWithinDeadline(deadline, now);
     if (record.nativeProtocol !== 2) throw new BridgeError("BRIDGE_PROTOCOL_ERROR", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_ERROR);
     let status;
     try {
@@ -214,11 +231,16 @@ export async function discoverBridgeConnections(config, sessionInfo, {
         id: randomUUID(),
         command: "status",
         ...(refreshLogin ? { refreshLogin: true } : {}),
-      }, { timeoutMs: refreshLogin ? 30_000 : 1_000, instanceId: record.instanceId });
+      }, {
+        timeoutMs: boundedTimeout(refreshLogin ? 30_000 : 1_000, deadline, now),
+        instanceId: record.instanceId,
+      });
     } catch (error) {
+      assertWithinDeadline(deadline, now);
       if (error instanceof BridgeError && ["BRIDGE_DISCONNECTED", "BRIDGE_TIMEOUT"].includes(error.code)) continue;
       throw error;
     }
+    assertWithinDeadline(deadline, now);
     if (!isRecord(status) || status.instanceId !== record.instanceId || status.nativeProtocol !== 2 ||
         !["authenticated", "anonymous", "failed", "not_checked"].includes(status.login) ||
         !(status.checkedAt === null || (Number.isFinite(status.checkedAt) && status.checkedAt >= 0)) ||
@@ -228,13 +250,17 @@ export async function discoverBridgeConnections(config, sessionInfo, {
     active.push({ instanceId: record.instanceId, login: status.login, checkedAt: status.checkedAt, ...(status.error ? { error: status.error } : {}), versions: status.versions });
   }
   if (active.length === 0 && probeLegacy) {
+    const timeoutMs = boundedTimeout(200, deadline, now);
+    let legacyConnected = false;
     try {
-      await waitForLegacyBridge(config, sessionInfo, { timeoutMs: 200 });
-      throw new BridgeError("BRIDGE_PROTOCOL_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_UNSUPPORTED);
+      await waitForLegacyBridge(config, sessionInfo, { timeoutMs, now, ...(sleep ? { sleep } : {}) });
+      legacyConnected = true;
     } catch (error) {
       if (error instanceof BridgeError && error.code === "BRIDGE_PROTOCOL_UNSUPPORTED") throw error;
       if (!(error instanceof BridgeError) || !["BRIDGE_DISCONNECTED", "BRIDGE_TIMEOUT"].includes(error.code)) throw error;
     }
+    assertWithinDeadline(deadline, now);
+    if (legacyConnected) throw new BridgeError("BRIDGE_PROTOCOL_UNSUPPORTED", BRIDGE_ERROR_MESSAGES.BRIDGE_PROTOCOL_UNSUPPORTED);
   }
   return active;
 }
@@ -246,15 +272,22 @@ export async function selectBridgeConnection(config, sessionInfo, {
   request = requestBridge,
   waitForLegacyBridge = waitForBridge,
   refreshLogin = false,
+  deadline,
+  now = Date.now,
+  sleep,
 } = {}) {
+  assertWithinDeadline(deadline, now);
   const selectedInstanceId = instanceId ?? await readSelection(config, sessionInfo);
+  assertWithinDeadline(deadline, now);
   const records = await readConnections(config, sessionInfo);
+  assertWithinDeadline(deadline, now);
   if (selectedInstanceId) {
     const selectedRecord = records.find((record) => record.instanceId === selectedInstanceId);
     if (!selectedRecord) return { connection: null, selectedInstanceId };
     const connections = await discoverBridgeConnections(config, sessionInfo, {
       readConnections: async () => [selectedRecord], request, waitForLegacyBridge, refreshLogin,
       probeLegacy: false,
+      deadline, now, sleep,
     });
     return { connection: connections[0] ?? null, selectedInstanceId };
   }
@@ -264,6 +297,7 @@ export async function selectBridgeConnection(config, sessionInfo, {
     waitForLegacyBridge,
     refreshLogin: false,
     probeLegacy: true,
+    deadline, now, sleep,
   });
   if (connections.length > 1) {
     throw new BridgeError("BRIDGE_PROFILE_AMBIGUOUS", BRIDGE_ERROR_MESSAGES.BRIDGE_PROFILE_AMBIGUOUS);
@@ -276,6 +310,7 @@ export async function selectBridgeConnection(config, sessionInfo, {
     waitForLegacyBridge,
     refreshLogin: true,
     probeLegacy: false,
+    deadline, now, sleep,
   });
   return { connection: refreshed[0] ?? null, selectedInstanceId: null };
 }

@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { constants, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { MIN_NODE_VERSION, RUNTIME_PROTOCOL, supportsNodeVersion } from "./runtime-support.mjs";
@@ -24,7 +24,7 @@ export { MIN_NODE_VERSION, RUNTIME_PROTOCOL, supportsNodeVersion };
 
 const OWNER = "MC0571";
 const REPOSITORY = "weixin-channels-video";
-const RELEASES_API = "https://api.github.com/repos/" + OWNER + "/" + REPOSITORY + "/releases/latest";
+const RELEASES_API = "https://api.github.com/repos/" + OWNER + "/" + REPOSITORY + "/releases?per_page=100&page=";
 const RELEASE_DOWNLOADS = "https://github.com/" + OWNER + "/" + REPOSITORY + "/releases/download";
 const ARCHIVE_NAME = (version) => REPOSITORY + "-skill-v" + version + ".tar.gz";
 const SKILL_ZIP_NAME = (version) => REPOSITORY + "-skill-v" + version + ".zip";
@@ -149,27 +149,51 @@ async function copyCacheFile(source, destination) {
   await copyFile(source, destination, constants.COPYFILE_EXCL);
 }
 
-async function readRuntime(root, expectedVersion, { requirePrivate = false } = {}) {
-  if (requirePrivate) await assertPrivateRuntime(root);
-  const metadata = JSON.parse((await readRegularFile(join(root, "runtime.json"))).toString("utf8"));
+async function runtimeContentHash(root) {
+  const hash = createHash("sha256");
+  for (const name of ["runtime.json", "scripts/cli.mjs", "scripts/native-host.mjs"]) {
+    const contents = await readRegularFile(join(root, name));
+    hash.update(name + "\0" + contents.length + "\0").update(contents);
+  }
+  return hash.digest("hex");
+}
+
+function parseRuntimeMetadata(text, expectedVersion) {
+  let metadata;
+  try { metadata = JSON.parse(text); }
+  catch { fail("运行资源元数据无效。"); }
   if (
     !isRecord(metadata) || Object.keys(metadata).length !== 3 ||
     !parseVersion(metadata.version) ||
-    !Number.isInteger(metadata.runtimeProtocol) ||
-    metadata.runtimeProtocol !== RUNTIME_PROTOCOL ||
-    metadata.minimumNodeVersion !== MIN_NODE_VERSION ||
+    !Number.isInteger(metadata.runtimeProtocol) || metadata.runtimeProtocol < 1 ||
+    !supportsNodeVersion(metadata.minimumNodeVersion, metadata.minimumNodeVersion) ||
     (expectedVersion && metadata.version !== expectedVersion)
-  ) fail("Skill 与运行资源版本不兼容，请更新 Skill 后重试。");
+  ) fail("运行资源元数据无效。");
+  return metadata;
+}
+
+function isCompatibleRuntime(metadata) {
+  return metadata.runtimeProtocol === RUNTIME_PROTOCOL &&
+    supportsNodeVersion(process.versions.node, metadata.minimumNodeVersion);
+}
+
+async function readRuntime(root, expectedVersion, { requirePrivate = false, allowIncompatible = false } = {}) {
+  if (requirePrivate) await assertPrivateRuntime(root);
+  const metadata = parseRuntimeMetadata((await readRegularFile(join(root, "runtime.json"))).toString("utf8"), expectedVersion);
 
   const scriptsDir = join(root, "scripts");
   await assertRegularFile(join(scriptsDir, "cli.mjs"));
   await assertRegularFile(join(scriptsDir, "native-host.mjs"));
-  return {
+  const compatible = isCompatibleRuntime(metadata);
+  if (!compatible && !allowIncompatible) fail("Skill 与运行资源版本不兼容，请更新 Skill 后重试。");
+  const runtime = {
     version: metadata.version,
     runtimeProtocol: metadata.runtimeProtocol,
     minimumNodeVersion: metadata.minimumNodeVersion,
     runtimeCLI: join(scriptsDir, "cli.mjs"),
   };
+  if (allowIncompatible) runtime.compatible = compatible;
+  return runtime;
 }
 
 async function fetchBytes(url, {
@@ -177,6 +201,7 @@ async function fetchBytes(url, {
   json = false,
   expectedSize,
   contentTypes,
+  pagination = false,
 } = {}) {
   let response;
   try {
@@ -204,7 +229,10 @@ async function fetchBytes(url, {
     chunks.push(Buffer.from(chunk));
   }
   if (expectedSize !== undefined && size !== expectedSize) fail("GitHub Release 资源大小与元数据不一致。");
-  return Buffer.concat(chunks, size);
+  const bytes = Buffer.concat(chunks, size);
+  return pagination
+    ? { bytes, hasNextPage: /(?:^|,)\s*<[^>]+>\s*;\s*rel="?next"?(?:\s*;|\s*,|\s*$)/.test(response.headers.get("link") ?? "") }
+    : bytes;
 }
 
 function releaseAsset(release, version, name, maxBytes, contentTypes) {
@@ -213,7 +241,7 @@ function releaseAsset(release, version, name, maxBytes, contentTypes) {
     : [];
   if (matches.length !== 1) fail("GitHub Release v" + version + " 缺少唯一资源 " + name + "。");
   const asset = matches[0];
-  const expectedUrl = RELEASE_DOWNLOADS + "/v" + version + "/" + name;
+  const expectedUrl = RELEASE_DOWNLOADS + "/" + release.tag_name + "/" + name;
   if (
     !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > maxBytes ||
     typeof asset.content_type !== "string" || !contentTypes.includes(asset.content_type.split(";")[0].trim().toLowerCase()) ||
@@ -222,29 +250,69 @@ function releaseAsset(release, version, name, maxBytes, contentTypes) {
   return { name, size: asset.size };
 }
 
-async function latestRelease() {
-  const body = await fetchBytes(RELEASES_API, {
-    maxBytes: 1024 * 1024,
-    json: true,
-    contentTypes: ["application/json", "application/vnd.github+json"],
-  });
-  let release;
-  try { release = JSON.parse(body.toString("utf8")); }
-  catch { fail("GitHub Releases 返回了无效响应。"); }
-  if (!isRecord(release) || release.draft !== false || release.prerelease !== false) {
-    fail("没有可用的稳定 GitHub Release。");
+async function skillReleases() {
+  const releases = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const { bytes, hasNextPage } = await fetchBytes(RELEASES_API + page, {
+      maxBytes: 1024 * 1024,
+      json: true,
+      contentTypes: ["application/json", "application/vnd.github+json"],
+      pagination: true,
+    });
+    let pageReleases;
+    try { pageReleases = JSON.parse(bytes.toString("utf8")); }
+    catch { fail("GitHub Releases 返回了无效响应。"); }
+    if (!Array.isArray(pageReleases) || pageReleases.some((item) =>
+      !isRecord(item) || typeof item.tag_name !== "string" ||
+      typeof item.draft !== "boolean" || typeof item.prerelease !== "boolean" || !Array.isArray(item.assets)
+    )) fail("GitHub Releases 返回了无效响应。");
+    releases.push(...pageReleases);
+    if (!hasNextPage) return releases;
   }
-  const version = typeof release.tag_name === "string" && release.tag_name.startsWith("v")
-    ? parseVersion(release.tag_name.slice(1))
-    : null;
-  if (!version) fail("最新 GitHub Release 的版本标签无效。");
+  fail("GitHub Releases 分页数量超过允许范围。");
+}
+
+function releaseCandidates(releases) {
+  const candidates = [];
+  for (const release of releases) {
+    if (release.draft || release.prerelease) continue;
+    const isSkillTag = release.tag_name.startsWith("skill-v");
+    const isLegacyTag = !isSkillTag && release.tag_name.startsWith("v");
+    if (!isSkillTag && !isLegacyTag) continue;
+    const tagVersion = release.tag_name.slice(isSkillTag ? 7 : 1);
+    const version = parseVersion(tagVersion);
+    if (!version) {
+      if (isSkillTag) fail("Skill Release 标签版本无效。");
+      continue;
+    }
+    const archiveAssetExists = release.assets.some((asset) => asset?.name === ARCHIVE_NAME(version));
+    if (!archiveAssetExists && isLegacyTag) continue;
+    if (!archiveAssetExists || release.tag_name !== (isSkillTag ? "skill-v" : "v") + version) {
+      fail("Skill Release 资源元数据无效。");
+    }
+    candidates.push({ release, version, isSkillTag });
+  }
+  return candidates.sort((a, b) => compareVersions(b.version, a.version) || Number(b.isSkillTag) - Number(a.isSkillTag));
+}
+
+function releasePackage(release, version) {
   const archive = releaseAsset(release, version, ARCHIVE_NAME(version), MAX_DOWNLOAD_BYTES,
     ["application/gzip", "application/x-gzip", "application/octet-stream"]);
   releaseAsset(release, version, SKILL_ZIP_NAME(version), MAX_DOWNLOAD_BYTES,
     ["application/zip", "application/octet-stream"]);
   const checksums = releaseAsset(release, version, "SHA256SUMS", 64 * 1024,
     ["text/plain", "application/octet-stream"]);
-  return { version, archive, checksums };
+  return { archive, checksums };
+}
+
+function compareVersions(a, b) {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
 }
 
 function checksumFor(text, assetName) {
@@ -384,8 +452,8 @@ export function parseSkillArchive(archiveBytes) {
   return parseSkillTar(tar);
 }
 
-export async function unpackSkillArchive(archiveBytes, destination) {
-  const members = parseSkillArchive(archiveBytes);
+export async function unpackSkillArchive(archiveBytes, destination, parsedMembers = parseSkillArchive(archiveBytes)) {
+  const members = parsedMembers;
   const destinationRoot = resolve(destination);
   await ensureNewCacheDirectory(destinationRoot);
   const directories = [...members].filter(([, member]) => member.directory)
@@ -428,8 +496,12 @@ async function readCurrentMarker({ missingOk = false } = {}) {
     if (process.platform === "win32") await assertWindowsPrivatePath(markerPath);
     const marker = JSON.parse(await readFile(markerPath, "utf8"));
     if (
-      !isRecord(marker) || Object.keys(marker).length !== 2 ||
-      !parseVersion(marker.version) || marker.runtimeProtocol !== RUNTIME_PROTOCOL
+      !isRecord(marker) || ![2, 3].includes(Object.keys(marker).length) ||
+      !parseVersion(marker.version) || marker.runtimeProtocol !== RUNTIME_PROTOCOL ||
+      (Object.hasOwn(marker, "packageHash") &&
+        (Object.keys(marker).length !== 3 || typeof marker.packageHash !== "string" ||
+          !/^[a-f0-9]{64}$/.test(marker.packageHash))) ||
+      (!Object.hasOwn(marker, "packageHash") && Object.keys(marker).length !== 2)
     ) fail("运行资源缓存标记无效，已保留原文件。");
     return marker;
   } catch (error) {
@@ -438,15 +510,14 @@ async function readCurrentMarker({ missingOk = false } = {}) {
   }
 }
 
-async function writeCurrentVersion(version) {
+async function writeCurrentVersion(version, packageHash) {
   await readCurrentMarker({ missingOk: true });
   const markerPath = join(CACHE_ROOT, "current.json");
   const tempPath = join(CACHE_ROOT, ".current-" + randomUUID() + ".tmp");
+  const marker = { version, runtimeProtocol: RUNTIME_PROTOCOL };
+  if (packageHash) marker.packageHash = packageHash;
   try {
-    await writeCacheFile(tempPath, Buffer.from(JSON.stringify({
-      version,
-      runtimeProtocol: RUNTIME_PROTOCOL,
-    }) + "\n"));
+    await writeCacheFile(tempPath, Buffer.from(JSON.stringify(marker) + "\n"));
     if (process.platform === "darwin") await chmod(tempPath, 0o600);
     await rename(tempPath, markerPath);
   } finally {
@@ -455,21 +526,26 @@ async function writeCurrentVersion(version) {
 }
 
 async function prepareFromRelease() {
-  const { version, archive, checksums } = await latestRelease();
-  const destination = join(CACHE_ROOT, version);
-  let runtime;
-  let destinationInfo;
-  try { destinationInfo = await lstat(destination); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const candidates = releaseCandidates(await skillReleases());
+  if (!candidates.length) fail("没有可用的稳定 Skill Release。");
+  for (const { release, version } of candidates) {
+    const destination = join(CACHE_ROOT, version);
+    let destinationInfo;
+    try { destinationInfo = await lstat(destination); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
 
-  if (destinationInfo) {
-    if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) {
-      fail("同版本运行资源缓存不是普通目录，已保留原数据。");
+    if (destinationInfo) {
+      if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) {
+        fail("同版本运行资源缓存不是普通目录，已保留原数据。");
+      }
+      const runtime = await readRuntime(destination, version, { requirePrivate: true, allowIncompatible: true });
+      if (!runtime.compatible) continue;
+      await ensureCacheRoot();
+      return materializeRuntime(runtime);
     }
-    runtime = await readRuntime(destination, version, { requirePrivate: true });
-  } else {
-    const tag = "v" + version;
-    const releaseBase = RELEASE_DOWNLOADS + "/" + tag;
+
+    const { archive, checksums } = releasePackage(release, version);
+    const releaseBase = RELEASE_DOWNLOADS + "/" + release.tag_name;
     const archiveName = archive.name;
     const [sumsBytes, archiveBytes] = await Promise.all([
       fetchBytes(releaseBase + "/SHA256SUMS", {
@@ -486,26 +562,34 @@ async function prepareFromRelease() {
     const actualHash = createHash("sha256").update(archiveBytes).digest("hex");
     if (actualHash !== expectedHash) fail("Skill TAR 包 SHA256 校验失败。");
 
+    const members = parseSkillArchive(archiveBytes);
+    const metadataMember = members.get("weixin-channels-video/runtime.json");
+    if (!metadataMember || metadataMember.directory) fail("Skill TAR 包缺少运行资源元数据。");
+    const metadata = parseRuntimeMetadata(metadataMember.data.toString("utf8"), version);
+    if (!isCompatibleRuntime(metadata)) continue;
+
     await ensureCacheRoot();
     const stage = await mkdtemp(join(CACHE_ROOT, ".prepare-" + version + "-"));
     try {
       await secureNewCacheDirectory(stage);
       const payload = join(stage, "payload");
-      await unpackSkillArchive(archiveBytes, payload);
+      await unpackSkillArchive(archiveBytes, payload, members);
       const source = join(payload, "weixin-channels-video");
-      runtime = await readRuntime(source, version, { requirePrivate: true });
-      runtime = await cacheRuntime(source, runtime, "release");
+      const runtime = await readRuntime(source, version, { requirePrivate: true });
+      const cached = await cacheRuntime(source, runtime, "release");
+      return await materializeRuntime(cached);
     } finally {
       await rm(stage, { recursive: true, force: true });
     }
   }
-
-  await ensureCacheRoot();
-  return materializeRuntime(runtime);
+  fail("没有与当前运行环境兼容的稳定 Skill Release。");
 }
 
 async function cacheRuntime(source, runtime, stagePrefix) {
-  const destination = join(CACHE_ROOT, runtime.version);
+  const packageHash = stagePrefix === "package" ? await runtimeContentHash(source) : null;
+  const destination = join(CACHE_ROOT, packageHash
+    ? runtime.version + "-package-" + packageHash
+    : runtime.version);
   let destinationInfo;
   try { destinationInfo = await lstat(destination); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -514,7 +598,11 @@ async function cacheRuntime(source, runtime, stagePrefix) {
     if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) {
       fail("同版本运行资源缓存不是普通目录，已保留原数据。");
     }
-    return readRuntime(destination, runtime.version, { requirePrivate: true });
+    const cachedRuntime = await readRuntime(destination, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(destination) !== packageHash) {
+      fail("同版本运行资源缓存内容与包不一致，已保留原数据。");
+    }
+    return cachedRuntime;
   }
 
   const stage = await mkdtemp(join(CACHE_ROOT, "." + stagePrefix + "-" + runtime.version + "-"));
@@ -526,6 +614,9 @@ async function cacheRuntime(source, runtime, stagePrefix) {
     await copyCacheFile(runtime.runtimeCLI, join(scripts, "cli.mjs"));
     await copyCacheFile(join(dirname(runtime.runtimeCLI), "native-host.mjs"), join(scripts, "native-host.mjs"));
     await readRuntime(stage, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(stage) !== packageHash) {
+      fail("Skill 包内运行资源复制校验失败。");
+    }
 
     try {
       await rename(stage, destination);
@@ -535,7 +626,11 @@ async function cacheRuntime(source, runtime, stagePrefix) {
       catch { throw error; }
       if (!existing.isDirectory() || existing.isSymbolicLink()) throw error;
     }
-    return readRuntime(destination, runtime.version, { requirePrivate: true });
+    const cachedRuntime = await readRuntime(destination, runtime.version, { requirePrivate: true });
+    if (packageHash && await runtimeContentHash(destination) !== packageHash) {
+      fail("同版本运行资源缓存内容与包不一致，已保留原数据。");
+    }
+    return cachedRuntime;
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
@@ -543,7 +638,18 @@ async function cacheRuntime(source, runtime, stagePrefix) {
 
 export async function materializeRuntime(runtime, { writeMarker = writeCurrentVersion } = {}) {
   const previous = await readCurrentMarker({ missingOk: true });
-  if (!previous || previous.version !== runtime.version) await writeMarker(runtime.version);
+  const runtimeRoot = dirname(dirname(runtime.runtimeCLI));
+  const relativeRuntimeRoot = relative(CACHE_ROOT, runtimeRoot);
+  const packagePrefix = runtime.version + "-package-";
+  const packageHash = relativeRuntimeRoot.startsWith(packagePrefix)
+    ? relativeRuntimeRoot.slice(packagePrefix.length)
+    : null;
+  if (packageHash && !/^[a-f0-9]{64}$/.test(packageHash)) {
+    fail("运行资源缓存路径无效。");
+  }
+  if (!previous || previous.version !== runtime.version || (previous.packageHash ?? null) !== packageHash) {
+    await writeMarker(runtime.version, packageHash);
+  }
   return runtime;
 }
 
@@ -566,10 +672,16 @@ async function currentRuntime() {
   if (!marker) {
     return prepareFromRelease();
   }
-  const runtimeRoot = join(CACHE_ROOT, marker.version);
+  const runtimeRoot = join(CACHE_ROOT, marker.packageHash
+    ? marker.version + "-package-" + marker.packageHash
+    : marker.version);
   const runtimeInfo = await lstat(runtimeRoot);
   if (!runtimeInfo.isDirectory() || runtimeInfo.isSymbolicLink()) fail("当前运行资源缓存目录无效。");
-  return readRuntime(runtimeRoot, marker.version, { requirePrivate: true });
+  const runtime = await readRuntime(runtimeRoot, marker.version, { requirePrivate: true });
+  if (marker.packageHash && await runtimeContentHash(runtimeRoot) !== marker.packageHash) {
+    fail("当前 Skill 包运行资源缓存内容校验失败。请重新运行 prepare。");
+  }
+  return runtime;
 }
 
 function execute(runtimeCLI, args) {

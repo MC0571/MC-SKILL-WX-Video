@@ -2,6 +2,12 @@ import { lstat, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, win32 } from 'node:path';
 
+function metadataError(error) {
+  const wrapped = new Error('Chrome profile metadata is unavailable or invalid.');
+  if (error?.code === 'EPERM' || error?.code === 'EACCES') wrapped.code = error.code;
+  return wrapped;
+}
+
 export function defaultChromeUserDataDir({ platform = process.platform, home = homedir(), env = process.env } = {}) {
   if (platform === 'win32') {
     if (!env.LOCALAPPDATA) throw new Error('Chrome profile metadata is unavailable or invalid.');
@@ -15,8 +21,8 @@ export async function listChromeProfiles(userDataDir = defaultChromeUserDataDir(
   let state;
   try {
     state = JSON.parse(await readFile(join(userDataDir, 'Local State'), 'utf8'));
-  } catch {
-    throw new Error('Chrome profile metadata is unavailable or invalid.');
+  } catch (error) {
+    throw metadataError(error);
   }
 
   const info = state.profile?.info_cache;
@@ -64,6 +70,8 @@ export async function inspectChromeProfile({
   profileDirectory,
   userDataDir = defaultChromeUserDataDir(),
   extensionId,
+  lstatImpl = lstat,
+  readFileImpl = readFile,
 } = {}) {
   if (typeof profileDirectory !== 'string' || !profileDirectory) {
     return { state: 'not_configured', extension: 'unknown' };
@@ -74,11 +82,13 @@ export async function inspectChromeProfile({
   ) return { state: 'unknown', extension: 'unknown' };
 
   let profileInfo;
-  try { profileInfo = await lstat(join(userDataDir, profileDirectory)); }
+  try { profileInfo = await lstatImpl(join(userDataDir, profileDirectory)); }
   catch (error) {
     return error.code === 'ENOENT'
       ? { state: 'not_found', extension: 'unknown' }
-      : { state: 'unknown', extension: 'unknown' };
+      : ['EPERM', 'EACCES'].includes(error.code)
+        ? { state: 'access_denied', extension: 'unknown' }
+        : { state: 'unknown', extension: 'unknown' };
   }
   if (!profileInfo.isDirectory() || profileInfo.isSymbolicLink()) {
     return { state: 'metadata_unreadable', extension: 'unknown' };
@@ -92,14 +102,17 @@ export async function inspectChromeProfile({
   for (const name of ['Secure Preferences', 'Preferences']) {
     try {
       const preferencesPath = join(userDataDir, profileDirectory, name);
-      const preferencesInfo = await lstat(preferencesPath);
+      const preferencesInfo = await lstatImpl(preferencesPath);
       if (!preferencesInfo.isFile() || preferencesInfo.isSymbolicLink()) throw new Error();
-      const preferences = JSON.parse(await readFile(preferencesPath, 'utf8'));
+      const preferences = JSON.parse(await readFileImpl(preferencesPath, 'utf8'));
       const installed = preferences.extensions?.settings;
       if (installed && typeof installed === 'object' && !Array.isArray(installed)) {
         settings.push(Object.hasOwn(installed, extensionId) ? extensionState(installed[extensionId]) : null);
       }
     } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        return { state: 'access_denied', extension: 'unknown' };
+      }
       if (error.code !== 'ENOENT') unreadable = true;
     }
   }
@@ -131,7 +144,11 @@ export async function selectChromeProfile(reference, userDataDir = defaultChrome
         return { directory: reference, name: reference, profileDirectory: join(userDataDir, reference) };
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') throw new Error('The requested Chrome profile could not be inspected.');
+      if (error.code !== 'ENOENT') {
+        const wrapped = new Error('The requested Chrome profile could not be inspected.');
+        if (error.code === 'EPERM' || error.code === 'EACCES') wrapped.code = error.code;
+        throw wrapped;
+      }
     }
   }
   const profiles = await listChromeProfiles(userDataDir);
