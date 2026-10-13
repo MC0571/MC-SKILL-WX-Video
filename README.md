@@ -21,22 +21,9 @@
 - **商店安装（默认）**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。商店版本可能晚于 GitHub Release；以 Chrome 当前安装版本和实际界面为准。
 - **非商店安装（需明确选择）**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip`，并按同一 Release 的 `SHA256SUMS` 核验；也可按[构建说明](docs/architecture.md#构建与发布)从源码构建。将 ZIP 解压到会持续保留的位置，再在 `chrome://extensions` 启用开发者模式并加载该目录。不要把扩展放进 Skill 缓存；移动目录可能改变扩展 ID。开发者模式只用于此非商店安装方式。
 
-商店安装版在 Chrome 确认更新已下载后显示提示；选择立即更新时，会等当前任务和扩展下载结束再安全应用。非商店版低频检查公开的稳定 `extension-v…` Release，有更新时只提醒手动更新；检查结果未知时不会称为最新版。GitHub 发布或提交商店审核不代表 Chrome Web Store 已发布该版本，商店版以 Chrome 实际提供的更新为准。
+安装后，在同一 Chrome 用户中登录腾讯元宝，即可粘贴分享链接、预览视频并下载。详细操作、下载记录、更新提示和 Agent 设置见[扩展使用说明](docs/extension.md)。
 
-1. 在安装扩展的 Chrome 用户中登录 [腾讯元宝](https://yuanbao.tencent.com/)。
-2. 点击扩展图标，在打开的页面中粘贴分享链接并解析。
-3. 预览视频，查看封面、标题、作者和各版本下载链接。
-4. 点击所需版本下载。页面会显示完成或中断；关闭页面不会取消 Chrome 已启动的下载。
-
-扩展页还会列出最近 5 条本扩展下载，并可按本地日期查看完整记录、定位仍存在的文件；Chrome 中已清除的记录也会从列表移除。未点击过仓库链接时显示“Star 一下”，每次打开页面播放一次 3 秒星标动画；点击后记住选择，显示“Github”，不检测实际 Star。首次成功解析后，会显示可关闭的一次性商店评价提示，不区分安装来源。页面底部提供隐私政策与飞书问题和建议表单入口，表单需由用户自行填写和提交。
-
-视频保存位置遵循 Chrome 下载设置。默认文件名是清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`）；显式相对 `.mp4` 文件名按原路径传给 Chrome，重名时由 Chrome 自动追加后缀。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
-
-标题区的“Agent 设置”会展示 ChatGPT、Claude Code 与 WorkBuddy 图标及连接状态灯：已连接为绿灯，连接失败或断开为闪烁红灯，正在连接为橙灯，尚未确认为灰灯；减少动态效果时红灯不闪烁。它可打开完整安装提示词，其中会自动填入当前 Chrome 用户的实际扩展 ID 和稳定实例 UUID。把提示词交给目标 Agent 即表示选定这个 Chrome 用户；AI 会按 Skill 指引检查或修复桥接并连接该实例，不需要手动查找或复制 ID。元宝已登录时收起登录提示，未登录或检查失败时仍显示对应状态。
-
-![Agent 设置](docs/images/agent-settings.jpg)
-
-## AI Skill
+## Agent Skill
 
 先按[安装与本地运行指引](skills/weixin-channels-video/references/agent-installation.md)确认 Agent 的运行环境与安装入口。Skill 用户需要 Node.js 22.22.2+、Chrome 116+，并能在目标 Chrome 所在机器运行本地命令。Codex 可通过 Vercel `skills` CLI 安装完整 Skill：
 
@@ -48,7 +35,7 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 
 也可以从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `skill-v…` 完整 Skill 包，再按目标 Agent 的官方方式导入。Skill 包包含 `SKILL.md`、`scripts/`、`references/` 和运行资源，不包含 Chrome 扩展。非商店扩展包使用独立的 `extension-v…` Release；Skill 与扩展版本分别维护，版本不同本身不代表不兼容，运行时按协议检查兼容性。
 
-安装后可直接把分享链接交给 AI：
+安装后可直接把分享链接交给 Agent：
 
 ```text
 帮我下载这个视频号视频：

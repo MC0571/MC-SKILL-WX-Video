@@ -28,6 +28,7 @@ const EXTENSION_ASSETS = [
   'styles.css',
   'background.js',
   'agent.js',
+  'agent.css',
   'offscreen.html',
   'offscreen.js',
   'yuanbao-frame.js',
@@ -113,6 +114,21 @@ if (buildExtension) {
   await copyExtensionAssets(extensionOutput);
   await cp(join(root, 'LICENSE'), join(extensionOutput, 'LICENSE'));
   await cp(join(root, 'NOTICE.md'), join(extensionOutput, 'NOTICE.md'));
+  const uiLicenses = [
+    '@shoelace-style/shoelace/LICENSE.md',
+    '@shoelace-style/localize/LICENSE.md',
+    'lit/LICENSE',
+    'lit-element/LICENSE',
+    'lit-html/LICENSE',
+    '@lit/reactive-element/LICENSE',
+    '@floating-ui/dom/LICENSE',
+    '@floating-ui/core/LICENSE',
+    '@floating-ui/utils/LICENSE',
+    'composed-offset-position/LICENSE.md',
+  ];
+  const licenses = await Promise.all(uiLicenses.map(async (path) =>
+    `${path}\n\n${await readFile(join(root, 'node_modules', path), 'utf8')}`));
+  await writeFile(join(extensionOutput, 'THIRD_PARTY_LICENSES.txt'), `${licenses.join('\n\n')}\n`);
 }
 
 if (releasePackage) {

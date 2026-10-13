@@ -18,6 +18,8 @@ class FixtureElement {
     this.disabled = false;
     this.textContent = "";
     this.className = "";
+    this.value = "";
+    this.validity = { valid: true, valueMissing: false, typeMismatch: false };
   }
 
   addEventListener(type, listener) {
@@ -28,21 +30,37 @@ class FixtureElement {
 
   async click() {
     if (this.disabled) return;
-    await Promise.all((this.listeners.get("click") ?? []).map((listener) => listener({ target: this })));
+    await this.dispatch("click");
   }
 
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = [...children]; }
+  async dispatch(type) {
+    for (const listener of this.listeners.get(type) ?? []) await listener({ target: this, preventDefault() {} });
+  }
+
+  append(...children) {
+    for (const child of children) {
+      if (child.parentElement) child.parentElement.children = child.parentElement.children.filter((entry) => entry !== child);
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+  replaceChildren(...children) {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    this.append(...children);
+  }
   setAttribute(name, value) { this.attributes.set(name, value); }
   removeAttribute(name) { this.attributes.delete(name); }
   pause() {}
   load() {}
-  focus() {}
+  focus() { this.focused = true; }
 }
 
 class FixtureDocument {
   constructor(selectors) {
     this.elements = new Map(selectors.map((selector) => [selector, new FixtureElement()]));
+    for (const [selector, element] of this.elements) element.id = selector.slice(1);
+    if (this.elements.has("#history-date-filter")) this.elements.get("#history-date-filter").value = "all";
     for (const selector of [
       "#review-prompt", "#recent-download-empty", "#history-view",
       "#download-history-empty", "#history-load-more", "#login-status", "#yuanbao-login-link",
@@ -128,8 +146,8 @@ function makeChromeApi({ items = [], storage = {}, sourceId = "jdecfnemmnhbpamcf
 
 const historySelectors = [
   "#recent-download-list", "#recent-download-empty", "#home-view", "#history-view",
-  "#open-download-history", "#history-back", "#history-heading", "#download-history-list",
-  "#download-history-empty", "#history-order-toggle", "#history-load-more", "#history-status",
+  "#open-download-history", "#home-link", "#parse-form", "#history-heading", "#download-history-list",
+  "#download-history-empty", "#history-order-toggle", "#history-order-label", "#history-date-filter", "#history-load-more", "#history-status",
 ];
 
 let pageFixtureSequence = 0;
@@ -346,6 +364,48 @@ for (const action of ["#review-dismiss", "#review-link"]) {
   });
 }
 
+test("review prompt follows the first download in the active list without counting as a download", async () => {
+  const documentApi = new FixtureDocument([
+    ...historySelectors, "#review-prompt", "#review-link", "#review-dismiss",
+  ]);
+  const items = [];
+  const { chromeApi, createdListeners } = makeChromeApi({
+    items, storage: { [FIRST_SUCCESSFUL_PARSE_KEY]: 12 },
+  });
+  const windowApi = new FixtureElement("window");
+  initializeEngagementUi({ chromeApi, documentApi, windowApi });
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi });
+  await new Promise((resolve) => setImmediate(resolve));
+  const prompt = documentApi.querySelector("#review-prompt");
+  assert.equal(documentApi.querySelector("#recent-download-list").children.length, 0);
+
+  items.push(download(1));
+  for (const listener of createdListeners) listener(items[0]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const recent = documentApi.querySelector("#recent-download-list");
+  assert.equal(prompt.hidden, false);
+  assert.equal(recent.children[0].children[1].children[1].children[0], prompt);
+
+  items.push(download(2));
+  for (const listener of createdListeners) listener(items[1]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const history = documentApi.querySelector("#download-history-list");
+  assert.equal(history.children[0].children[1].children[1].children[0], prompt);
+  assert.equal(documentApi.querySelector("#history-status").textContent, "2 条记录");
+  assert.equal(recent.children[0].children[1].children[1].children.length, 0);
+
+  for (const listener of createdListeners) listener(items[1]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(history.children[0].children[1].children[1].children[0], prompt);
+  await documentApi.querySelector("#home-link").click();
+  assert.equal(recent.children[0].children[1].children[1].children[0], prompt);
+  await documentApi.querySelector("#review-dismiss").click();
+  assert.equal(prompt.hidden, true);
+  await windowApi.dispatch("pagehide");
+});
+
 test("page entry follows Agent-created downloads and reopening without a contradictory empty summary", async () => {
   const items = [];
   const { chromeApi, createdListeners, downloadListeners, erasedListeners } = makeChromeApi({ items });
@@ -383,6 +443,44 @@ test("page entry follows Agent-created downloads and reopening without a contrad
   });
 });
 
+test("parse validation warns inline without sending a request and clears on editing", async () => {
+  const { chromeApi } = makeChromeApi();
+  const requests = [];
+  chromeApi.runtime.sendMessage = async (message) => {
+    requests.push(message);
+    return { ok: false, error: { code: "UPSTREAM_ERROR", message: "解析暂时不可用，请稍后重试。" } };
+  };
+  await withPage(chromeApi, async (documentApi) => {
+    const input = documentApi.querySelector("#share-url");
+    const form = documentApi.querySelector("#parse-form");
+    const status = documentApi.querySelector("#parse-status");
+    input.validity = { valid: false, valueMissing: true, typeMismatch: false };
+    await form.dispatch("submit");
+    assert.deepEqual(requests, []);
+    assert.equal(input.focused, true);
+    assert.equal(input.attributes.get("aria-invalid"), "true");
+    assert.equal(status.dataset.error, "true");
+    assert.equal(status.textContent, "请先粘贴视频号分享链接，再点击解析。");
+    input.value = "invalid-url";
+    await input.dispatch("input");
+    assert.equal(input.attributes.has("aria-invalid"), false);
+    assert.equal(status.textContent, "");
+    input.validity = { valid: false, valueMissing: false, typeMismatch: true };
+    await form.dispatch("submit");
+    assert.equal(requests.length, 0);
+    assert.equal(status.textContent, "链接格式不正确，请粘贴完整的视频号分享链接。");
+    input.value = "https://weixin.qq.com/sph/example";
+    input.validity = { valid: true, valueMissing: false, typeMismatch: false };
+    await form.dispatch("submit");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, input.value);
+    assert.equal(input.attributes.has("aria-invalid"), false);
+    assert.equal(status.dataset.error, "true");
+    assert.equal(status.textContent, "解析暂时不可用，请稍后重试。");
+    assert.equal(documentApi.querySelector("#parse-button").disabled, false);
+  });
+});
+
 test("page download start errors remain visible and clear after a successful retry", async () => {
   const { chromeApi } = makeChromeApi();
   let downloadAttempts = 0;
@@ -397,9 +495,18 @@ test("page download start errors remain visible and clear after a successful ret
     return { ok: ++downloadAttempts > 1 };
   };
   await withPage(chromeApi, async (documentApi) => {
+    const input = documentApi.querySelector("#share-url");
+    input.value = "https://weixin.qq.com/sph/example";
+    await documentApi.querySelector("#open-download-history").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(documentApi.querySelector("#home-view").hidden, true);
     for (const submit of documentApi.querySelector("#parse-form").listeners.get("submit")) {
       await submit({ preventDefault() {} });
     }
+    assert.equal(input.value, "https://weixin.qq.com/sph/example");
+    assert.equal(documentApi.querySelector("#home-view").hidden, false);
+    assert.equal(documentApi.querySelector("#history-view").hidden, true);
+    assert.equal(documentApi.querySelector("#result-card").hidden, false);
     const button = documentApi.querySelector("#download-button");
     await button.click();
     await new Promise((resolve) => setImmediate(resolve));
@@ -483,6 +590,95 @@ test("download history ignores unrelated events and refreshes without collapsing
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(rows().length, 24, "refreshing a visible history should retain all loaded rows");
   assert.equal(rows()[0].children[0].children[0].textContent, "updated-clip.mp4");
+});
+
+test("date groups retain their collapsed state across views, pagination and download refreshes", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const items = Array.from({ length: 24 }, (_, index) => download(index + 1));
+  const { chromeApi, downloadListeners } = makeChromeApi({ items });
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  const group = (selector) => documentApi.querySelector(selector).children[0];
+  const toggle = (selector) => group(selector).children[0].children[0];
+  await toggle("#recent-download-list").click();
+  assert.equal(group("#recent-download-list").children[1].hidden, true);
+  assert.equal(toggle("#recent-download-list").attributes.get("aria-expanded"), "false");
+  assert.equal(toggle("#recent-download-list").attributes.get("aria-controls"), group("#recent-download-list").children[1].id);
+
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(group("#download-history-list").children[1].hidden, true);
+  await documentApi.querySelector("#history-load-more").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(group("#download-history-list").children[1].children.length, 24);
+  assert.equal(group("#download-history-list").children[1].hidden, true);
+  for (const listener of downloadListeners) listener({ id: 24, state: "complete" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(group("#download-history-list").children[1].hidden, true);
+
+  await toggle("#download-history-list").click();
+  assert.equal(toggle("#download-history-list").attributes.get("aria-expanded"), "true");
+  await documentApi.querySelector("#home-link").click();
+  assert.equal(documentApi.querySelector("#history-view").hidden, true);
+  assert.equal(documentApi.querySelector("#home-view").hidden, false);
+  assert.equal(group("#recent-download-list").children[1].hidden, false);
+});
+
+test("changing the date filter clears pagination and ignores an older load-more response", async () => {
+  const documentApi = new FixtureDocument(historySelectors);
+  const now = new Date();
+  const items = Array.from({ length: 30 }, (_, index) => ({
+    ...download(index + 1), startTime: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, index).toISOString(),
+  }));
+  items.push(...Array.from({ length: 4 }, (_, index) => ({
+    ...download(100 + index), startTime: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 10, index).toISOString(),
+  })));
+  const { chromeApi } = makeChromeApi({ items });
+  const search = chromeApi.downloads.search.bind(chromeApi.downloads);
+  const appendStarted = deferred();
+  const releaseAppend = deferred();
+  let holdAppend = false;
+  chromeApi.downloads.search = async (query) => {
+    if (holdAppend && query.startTime !== undefined) {
+      holdAppend = false;
+      appendStarted.resolve();
+      await releaseAppend.promise;
+    }
+    return search(query);
+  };
+  initializeDownloadHistoryUi({ chromeApi, documentApi, windowApi: new FixtureElement("window") });
+  await new Promise((resolve) => setImmediate(resolve));
+  await documentApi.querySelector("#open-download-history").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  holdAppend = true;
+  await documentApi.querySelector("#history-load-more").click();
+  await appendStarted.promise;
+
+  const dateSelect = documentApi.querySelector("#history-date-filter");
+  dateSelect.value = "yesterday";
+  await dateSelect.dispatch("sl-change");
+  await new Promise((resolve) => setImmediate(resolve));
+  const rows = () => documentApi.querySelector("#download-history-list").children.flatMap((section) => section.children[1].children);
+  assert.equal(rows().length, 4);
+  assert.equal(documentApi.querySelector("#history-status").textContent, "4 条记录");
+  assert.equal(documentApi.querySelector("#history-load-more").hidden, true);
+  assert.equal(rows()[0].children[0].children[0].textContent, "clip-103.mp4");
+  await documentApi.querySelector("#history-order-toggle").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows()[0].children[0].children[0].textContent, "clip-100.mp4");
+  assert.match(documentApi.querySelector("#history-order-toggle").attributes.get("aria-label"), /当前从最早到最新/);
+  assert.equal(documentApi.querySelector("#history-order-label").textContent, "最早优先");
+  releaseAppend.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 4);
+  assert.equal(rows()[0].children[0].children[0].textContent, "clip-100.mp4");
+
+  dateSelect.value = "older";
+  await dateSelect.dispatch("sl-change");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rows().length, 0);
+  assert.equal(documentApi.querySelector("#history-status").textContent, "0 条记录");
+  assert.equal(documentApi.querySelector("#download-history-empty").textContent, "这个日期范围内没有下载记录。");
 });
 
 test("overlapping own download changes retain expanded history depth", async () => {

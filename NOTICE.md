@@ -14,3 +14,7 @@
 | `icons/agents/trae.png` | [TRAE 官网](https://www.trae.cn/)声明的 [图标](https://lf-cdn.trae.com.cn/obj/trae-com-cn/trae_website_prod_cn/favicon.png) |
 
 `icons/copy.svg` 与 `icons/terminal.svg` 来自 Google [Material Design Icons](https://github.com/google/material-design-icons)，分别为 `content_copy` 和 `terminal`。该图标库使用 [Apache 2.0](https://github.com/google/material-design-icons/blob/master/LICENSE) 许可；本包包含完整 [LICENSE](LICENSE)。
+
+## UI 组件
+
+下载记录的日期筛选和排序使用 [Shoelace](https://shoelace.style/) 2.20.1，采用 MIT 许可。本地构建包含组件及其依赖，不从 CDN 加载。扩展构建目录中的 `THIRD_PARTY_LICENSES.txt` 保留所用第三方包的完整版权与许可声明。

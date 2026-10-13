@@ -125,6 +125,47 @@ test("exact timestamp scans page same-time downloads by stable ID without gaps o
   assert.deepEqual(ascendingIds, Array.from({ length: 105 }, (_, index) => index + 1));
 });
 
+test("date filters include local calendar boundaries and keep older outside the recent 30 days", async () => {
+  const now = new Date(2026, 9, 13, 12);
+  const localDay = (offset) => new Date(2026, 9, 13 + offset).getTime();
+  const timestamps = [localDay(0), localDay(1), localDay(-1), localDay(-6), localDay(-7), localDay(-29), localDay(-29) - 1, localDay(-40)];
+  const items = timestamps.map((time, index) => ({ id: index + 1, byExtensionId: "ours", startTime: new Date(time).toISOString() }));
+  const chromeApi = makeChromeApi([...items, { ...items[0], id: 99, byExtensionId: "other" }]);
+  for (const [dateFilter, expected] of [
+    ["today", [1]], ["yesterday", [3]], ["last7", [1, 3, 4]],
+    ["last30", [1, 3, 4, 5, 6]], ["older", [7, 8]],
+  ]) {
+    const page = await loadDownloadHistoryPage(chromeApi, { dateFilter, now });
+    assert.deepEqual(page.items.map(({ id }) => id), expected, dateFilter);
+    assert.equal(page.hasMore, false);
+  }
+  await assert.rejects(loadDownloadHistoryPage(chromeApi, { dateFilter: "invalid", now }), TypeError);
+  await assert.rejects(loadDownloadHistoryPage(chromeApi, { dateFilter: "today", now: new Date(NaN) }), TypeError);
+});
+
+test("filtered pagination scans foreign records and retains its original date range across midnight", async () => {
+  const now = new Date(2026, 9, 13, 12);
+  const midnight = new Date(2026, 9, 13).toISOString();
+  const own = Array.from({ length: 30 }, (_, index) => ({ id: index + 1, byExtensionId: "ours", startTime: midnight }));
+  const foreign = Array.from({ length: 230 }, (_, index) => ({
+    id: 1000 + index, byExtensionId: "other", startTime: new Date(2026, 9, 13, 10, 0, index).toISOString(),
+  }));
+  const tomorrow = new Date(2026, 9, 14, 12);
+  const chromeApi = makeChromeApi([...own, ...foreign, { id: 999, byExtensionId: "ours", startTime: tomorrow.toISOString() }]);
+  const first = await loadDownloadHistoryPage(chromeApi, { dateFilter: "today", now, pageSize: 5 });
+  assert.deepEqual(first.items.map(({ id }) => id), [30, 29, 28, 27, 26]);
+  await assert.rejects(loadDownloadHistoryPage(chromeApi, { cursor: first.nextCursor, dateFilter: "yesterday", now }), TypeError);
+  const ids = first.items.map(({ id }) => id);
+  let cursor = first.nextCursor;
+  while (cursor) {
+    const page = await loadDownloadHistoryPage(chromeApi, { cursor, dateFilter: "today", now: tomorrow, pageSize: 5 });
+    ids.push(...page.items.map(({ id }) => id));
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(ids, Array.from({ length: 30 }, (_, index) => 30 - index));
+  assert.ok(chromeApi.downloads.queries.length > 6);
+});
+
 test("file status and reveal only apply to downloads owned by this extension", async () => {
   let item = { id: 3, byExtensionId: "ours", state: "complete" };
   const shown = [];

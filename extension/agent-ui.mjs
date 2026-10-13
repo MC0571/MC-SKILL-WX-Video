@@ -61,13 +61,21 @@ function validLoginState(value) {
     (!Object.hasOwn(value, "error") || value.error === "LOGIN_CHECK_FAILED"));
 }
 
-function initializeBridgeStatus(chromeApi, documentApi) {
-  const status = documentApi.querySelector("#bridge-connection-status");
+function initializeBridgeStatus(chromeApi, windowApi, documentApi) {
   const light = documentApi.querySelector("#agent-connection-light");
   const button = documentApi.querySelector("#ai-download-prompt-open");
+  const tooltip = documentApi.querySelector("#agent-connection-tooltip");
   const storage = chromeApi?.storage?.local;
   const changes = chromeApi?.storage?.onChanged;
-  if (!status || typeof storage?.get !== "function" || typeof changes?.addListener !== "function") return;
+  if (!light || !button || !tooltip || typeof storage?.get !== "function" || typeof changes?.addListener !== "function") return;
+
+  const resetTooltip = () => { delete button.dataset.tooltipDismissed; };
+  button.addEventListener("pointerenter", resetTooltip);
+  button.addEventListener("focus", resetTooltip);
+  button.addEventListener("click", () => { button.dataset.tooltipDismissed = "true"; });
+  windowApi.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") button.dataset.tooltipDismissed = "true";
+  });
 
   let changeVersion = 0;
   const render = (value) => {
@@ -75,22 +83,14 @@ function initializeBridgeStatus(chromeApi, documentApi) {
     const label = ({
       host_ready: "已连接", host_starting: "正在连接", failed: "未连接",
     })[stage] ?? "连接状态尚未确认";
-    if (light) light.dataset.state = ({
+    light.dataset.state = ({
       host_ready: "connected", host_starting: "connecting", failed: "disconnected",
     })[stage] ?? "unknown";
-    button?.setAttribute("aria-label", `Agent 设置，${label}`);
-    button?.setAttribute("title", `Agent 设置：${label}`);
-    if (!validBridgeState(value)) {
-      status.textContent = "";
-      status.hidden = true;
-      status.removeAttribute("data-error");
-      return;
-    }
-    status.textContent = value.stage === "failed"
+    button.setAttribute("aria-label", `Agent 设置，${label}`);
+    const description = stage === "failed"
       ? BRIDGE_FAILURES[value.reason] ?? BRIDGE_MESSAGES.failed
-      : BRIDGE_MESSAGES[value.stage];
-    status.hidden = false;
-    status.dataset.error = String(value.stage === "failed");
+      : BRIDGE_MESSAGES[stage] ?? label;
+    tooltip.textContent = description;
   };
   render(undefined);
   changes.addListener((items, area) => {
@@ -144,22 +144,13 @@ function initializeLoginStatus(chromeApi, windowApi, documentApi) {
   catch { /* A closed or unavailable extension runtime cannot refresh this snapshot. */ }
 }
 
-function initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity) {
-  const version = documentApi.querySelector("#extension-version");
-  const instance = documentApi.querySelector("#agent-instance-id");
+function initializeAgentIdentity(chromeApi, setPromptIdentity) {
   const extensionId = chromeApi?.runtime?.id;
   const validExtensionId = typeof extensionId === "string" && EXTENSION_ID_PATTERN.test(extensionId);
-  try {
-    const manifestVersion = chromeApi?.runtime?.getManifest?.()?.version;
-    if (version) version.textContent = typeof manifestVersion === "string" && manifestVersion ? manifestVersion : "unknown";
-  } catch {
-    if (version) version.textContent = "unknown";
-  }
   const storage = chromeApi?.storage?.local;
   const changes = chromeApi?.storage?.onChanged;
   const render = (id, errorMessage) => {
     const validInstanceId = typeof id === "string" && INSTANCE_ID_PATTERN.test(id);
-    if (instance) instance.textContent = validInstanceId ? id.slice(0, 8) : errorMessage ? "暂不可用" : "检查中";
     if (validExtensionId && validInstanceId) {
       setPromptIdentity?.({ extensionId, instanceId: id });
     } else {
@@ -311,9 +302,16 @@ export function initializeAgentUI({
   documentApi = globalThis.document,
 } = {}) {
   if (!documentApi?.querySelector) return;
-  initializeBridgeStatus(chromeApi, documentApi);
+  const versionBadge = documentApi.querySelector("#extension-version");
+  if (versionBadge) {
+    const version = chromeApi.runtime.getManifest().version;
+    versionBadge.textContent = `v${version}`;
+    versionBadge.setAttribute("aria-label", `扩展版本 ${version}`);
+    versionBadge.hidden = false;
+  }
+  initializeBridgeStatus(chromeApi, windowApi, documentApi);
   initializeLoginStatus(chromeApi, windowApi, documentApi);
   const setPromptIdentity = initializePrompt(windowApi, documentApi);
-  initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity);
+  initializeAgentIdentity(chromeApi, setPromptIdentity);
   initializeUpdateUi({ documentApi, chromeApi });
 }

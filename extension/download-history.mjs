@@ -1,5 +1,6 @@
 const PAGE_SIZE = 20;
 const SEARCH_BATCH_SIZE = 100;
+const DATE_FILTERS = new Set(["all", "today", "yesterday", "last7", "last30", "older"]);
 
 function historyItem(item) {
   return {
@@ -19,25 +20,55 @@ function compareItems(a, b, direction) {
   return direction * (byTime || a.id - b.id);
 }
 
-function encodeCursor(item, order) {
-  const encoded = btoa(JSON.stringify({ startTime: item.startTime, id: item.id, order }));
+function encodeCursor(item, order, dateFilter, range) {
+  const encoded = btoa(JSON.stringify({ startTime: item.startTime, id: item.id, order, dateFilter, range }));
   return `v1.${encoded.replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "")}`;
 }
 
-function decodeCursor(value, order) {
+function decodeCursor(value, order, dateFilter) {
   try {
     if (typeof value !== "string" || value.length > 512 || !value.startsWith("v1.")) throw new Error();
     const encoded = value.slice(3).replace(/-/gu, "+").replace(/_/gu, "/");
     const data = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")));
     if (
       data.order !== order ||
+      data.dateFilter !== dateFilter ||
+      !data.range || typeof data.range !== "object" || Array.isArray(data.range) ||
       typeof data.startTime !== "string" || !Number.isFinite(Date.parse(data.startTime)) ||
       !Number.isSafeInteger(data.id) || data.id < 0
     ) throw new Error();
-    return { startTime: data.startTime, id: data.id };
+    for (const key of ["startedAfter", "startedBefore"]) {
+      if (data.range[key] !== undefined && (typeof data.range[key] !== "string" || !Number.isFinite(Date.parse(data.range[key])))) {
+        throw new Error();
+      }
+    }
+    if (Object.keys(data.range).some((key) => !["startedAfter", "startedBefore"].includes(key))) throw new Error();
+    return { startTime: data.startTime, id: data.id, range: data.range };
   } catch {
     throw new TypeError("Invalid download history cursor");
   }
+}
+
+function dateRange(dateFilter, now) {
+  if (!DATE_FILTERS.has(dateFilter)) throw new TypeError("Invalid download history date filter");
+  if (dateFilter === "all") return {};
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const nextDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  const startOffset = dateFilter === "today" ? 0
+    : dateFilter === "yesterday" ? -1
+      : dateFilter === "last7" ? -6
+        : dateFilter === "last30" || dateFilter === "older" ? -29
+          : undefined;
+  if (startOffset === undefined) throw new TypeError("Invalid download history date filter");
+
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + startOffset);
+  if (dateFilter === "older") return { startedBefore: start.toISOString() };
+  const end = dateFilter === "yesterday" ? today : nextDay;
+  return {
+    startedAfter: new Date(start.getTime() - 1).toISOString(),
+    startedBefore: end.toISOString(),
+  };
 }
 
 function search(chromeApi, order, query, limit) {
@@ -50,14 +81,18 @@ function search(chromeApi, order, query, limit) {
 
 export async function loadDownloadHistoryPage(
   chromeApi = globalThis.chrome,
-  { cursor, pageSize = PAGE_SIZE, order = "desc" } = {},
+  { cursor, pageSize = PAGE_SIZE, order = "desc", dateFilter = "all", now = new Date() } = {},
 ) {
   if (!Number.isInteger(pageSize) || pageSize < 1) {
     throw new TypeError("Invalid download history page");
   }
   if (order !== "asc" && order !== "desc") throw new TypeError("Invalid download history order");
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError("Invalid download history date");
+  const range = cursor === undefined ? dateRange(dateFilter, now) : undefined;
+  if (cursor !== undefined && !DATE_FILTERS.has(dateFilter)) throw new TypeError("Invalid download history date filter");
   const direction = order === "asc" ? 1 : -1;
-  const after = cursor === undefined ? null : decodeCursor(cursor, order);
+  const after = cursor === undefined ? null : decodeCursor(cursor, order, dateFilter);
+  const queryRange = after?.range ?? range;
   const matches = [];
   const addMatches = (items) => {
     matches.push(...items.filter((item) =>
@@ -67,8 +102,12 @@ export async function loadDownloadHistoryPage(
 
   let query = {};
   if (after) {
-    addMatches(await search(chromeApi, order, { startTime: after.startTime }, 0));
-    query = order === "desc" ? { startedBefore: after.startTime } : { startedAfter: after.startTime };
+    addMatches(await search(chromeApi, order, { ...queryRange, startTime: after.startTime }, 0));
+    query = order === "desc"
+      ? { ...queryRange, startedBefore: after.startTime }
+      : { ...queryRange, startedAfter: after.startTime };
+  } else {
+    query = { ...queryRange };
   }
 
   while (matches.length <= pageSize) {
@@ -79,7 +118,7 @@ export async function loadDownloadHistoryPage(
     let scanned = batch;
     const boundary = batch.at(-1).startTime;
     if (batch.length === SEARCH_BATCH_SIZE) {
-      const tied = await search(chromeApi, order, { startTime: boundary }, 0);
+      const tied = await search(chromeApi, order, { ...queryRange, startTime: boundary }, 0);
       scanned = [
         ...batch.filter((item) => Date.parse(item.startTime) !== Date.parse(boundary)),
         ...tied,
@@ -87,7 +126,9 @@ export async function loadDownloadHistoryPage(
     }
     addMatches(scanned);
     if (matches.length > pageSize || batch.length < SEARCH_BATCH_SIZE) break;
-    query = order === "desc" ? { startedBefore: boundary } : { startedAfter: boundary };
+    query = order === "desc"
+      ? { ...queryRange, startedBefore: boundary }
+      : { ...queryRange, startedAfter: boundary };
   }
 
   matches.sort((a, b) => compareItems(a, b, direction));
@@ -95,7 +136,7 @@ export async function loadDownloadHistoryPage(
   const hasMore = matches.length > pageSize;
   return {
     items: page.map(historyItem),
-    nextCursor: hasMore && page.length ? encodeCursor(page.at(-1), order) : undefined,
+    nextCursor: hasMore && page.length ? encodeCursor(page.at(-1), order, dateFilter, queryRange) : undefined,
     hasMore,
   };
 }
