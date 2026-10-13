@@ -14,10 +14,12 @@
         <div class="page-title-row">
           <h1><a id="home-link" class="product-home-link" href="#home-view"><img class="product-mark" src="./icons/wechat-channels.png" alt="" aria-hidden="true">视频号下载<span id="extension-version" class="product-version" hidden></span></a></h1>
           <div class="header-actions">
-            <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer" title="喜欢这个插件？欢迎到 GitHub 点个 Star">
-              <img src="./icons/github.svg" alt="" aria-hidden="true">
-              <span class="repository-label"><span id="repository-link-label">Star 一下</span><span class="repository-stars" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span></span>
-            </a>
+            <sl-tooltip class="instant-tooltip" content="喜欢这个插件？欢迎到 GitHub 点个 Star" placement="bottom" hoist>
+              <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer">
+                <img src="./icons/github.svg" alt="" aria-hidden="true">
+                <span class="repository-label"><span id="repository-link-label">Star 一下</span><span class="repository-stars" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span></span>
+              </a>
+            </sl-tooltip>
             <button
               id="ai-download-prompt-open"
               class="secondary-button ai-prompt-launch"
@@ -146,9 +148,13 @@
           <div id="recent-download-list" class="download-history-list" aria-live="polite">
             <section id="review-prompt" class="inline-review-prompt" aria-label="评价扩展" hidden>
               <a id="review-link" class="review-link" target="_blank" rel="noreferrer">如果这个插件对您有帮助，请给个 5 星好评吧，爱你呦💗</a>
-              <div class="inline-actions">
-                <button id="review-dismiss" class="text-button" type="button">不再提醒</button>
-              </div>
+              <sl-tooltip class="instant-tooltip" content="不再提醒" hoist>
+                <button id="review-dismiss" type="button" aria-label="不再提醒">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                    <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </sl-tooltip>
             </section>
           </div>
         </div>
