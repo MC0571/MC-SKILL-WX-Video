@@ -99,7 +99,7 @@ test("login and bridge snapshots control login entry, connection light, and diag
   assert.deepEqual(messages, [{ type: LOGIN_REFRESH_TYPE }]);
   assert.equal(controls.get("#login-status").textContent, "腾讯元宝登录状态检查失败。");
   assert.equal(controls.get("#yuanbao-login-link").hidden, true);
-  assert.equal(controls.get("#agent-connection-tooltip").textContent, "浏览器已连接本地程序。");
+  assert.equal(controls.get("#agent-connection-tooltip").textContent, "浏览器已连接本地程序");
   assert.equal(controls.get("#ai-download-prompt-open").attributes.title, undefined);
   assert.equal(controls.get("#agent-connection-light").dataset.state, "connected");
   assert.equal(controls.get("#ai-download-prompt-open").attributes["aria-label"], "Agent 设置，已连接");
@@ -111,11 +111,13 @@ test("login and bridge snapshots control login entry, connection light, and diag
   assert.equal(controls.get("#login-status").hidden, true);
   assert.equal(controls.get("#yuanbao-login-link").hidden, true);
   changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "host_exited" } } }, "local"));
-  assert.equal(controls.get("#agent-connection-tooltip").textContent, "本地程序已退出，连接未建立或已中断。请让 AI 检查本地桥接。");
+  assert.equal(controls.get("#agent-connection-tooltip").textContent, "本地程序已退出，连接未建立或已中断，请让 AI 检查本地桥接");
   assert.equal(controls.get("#agent-connection-light").dataset.state, "disconnected");
   assert.equal(controls.get("#ai-download-prompt-open").attributes["aria-label"], "Agent 设置，未连接");
   changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed", reason: "protocol_unsupported" } } }, "local"));
-  assert.equal(controls.get("#agent-connection-tooltip").textContent, "扩展与本地程序协议不兼容。请让 AI 更新 Skill。");
+  assert.equal(controls.get("#agent-connection-tooltip").textContent, "扩展与本地程序协议不兼容，请让 AI 更新 Skill");
+  changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "failed" } } }, "local"));
+  assert.equal(controls.get("#agent-connection-tooltip").textContent, "复制提示词让你的 Agent 来代劳吧");
 });
 
 test("connection light distinguishes unknown and starting states and rejects stale initial snapshots", async () => {
@@ -177,7 +179,7 @@ test("prompt copy reports success briefly, resets on repeated clicks, and select
   assert.equal(button.attributes["aria-busy"], "true");
   await firstCopy;
   assert.equal(button.dataset.copied, undefined);
-  runTimer(timers, 500);
+  runTimer(timers, 250);
   assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "已复制");
   assert.equal(controls.get("#ai-download-prompt-copy-success").hidden, false);
   assert.equal(controls.get("#ai-download-prompt-copy-spinner").hidden, true);
@@ -188,7 +190,7 @@ test("prompt copy reports success briefly, resets on repeated clicks, and select
   await button.dispatch("click");
   assert.equal(timers.size, 1);
   assert.equal(controls.get("#ai-download-prompt-copy-success").hidden, true);
-  runTimer(timers, 500);
+  runTimer(timers, 250);
   assert.equal(button.dataset.copied, "true");
   runTimer(timers, 2500);
   assert.equal(controls.get("#ai-download-prompt-copy-label").textContent, "复制提示词");
@@ -211,7 +213,7 @@ test("prompt copy reports success briefly, resets on repeated clicks, and select
   fail = false;
   await button.dispatch("click");
   assert.equal(controls.get("#ai-prompt-copy-alert").hidden, true);
-  runTimer(timers, 500);
+  runTimer(timers, 250);
   assert.equal(button.dataset.copied, "true");
 });
 
@@ -225,7 +227,7 @@ test("copy feedback waits for the clipboard but adds no delay to a slow write or
   const copying = button.dispatch("click");
   assert.equal(button.dataset.copied, undefined);
   assert.equal(timers.size, 0);
-  windowApi.performance.now = () => 800;
+  windowApi.performance.now = () => 300;
   resolveCopy();
   await copying;
   assert.equal(button.dataset.copied, "true");

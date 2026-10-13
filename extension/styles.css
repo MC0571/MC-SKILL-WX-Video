@@ -138,6 +138,11 @@ h2 {
   background: var(--surface);
 }
 
+.input-card,
+.card.recent-downloads {
+  background: #ffffff;
+}
+
 label {
   display: block;
   margin-bottom: 8px;
