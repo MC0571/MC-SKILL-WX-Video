@@ -4,8 +4,6 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
   createExtensionRequest,
-  downloadStatus,
-  latestDownload,
   safeFilename,
   startDownload,
   waitForDownload,
@@ -667,28 +665,6 @@ test("download filenames are safe and existing files are uniquified", async () =
     startDownload({ title: "clip", downloadUrl: "javascript:alert(1)" }, chromeApi),
     TypeError,
   );
-});
-
-test("download status survives reopening through Chrome's own recent download history", async () => {
-  let query;
-  const chromeApi = {
-    runtime: { id: "synthetic-extension-id" },
-    downloads: {
-      search: async (value) => {
-        query = value;
-        return [
-          { byExtensionId: "other-extension", state: "complete", filename: "/tmp/other.mp4" },
-          { byExtensionId: "synthetic-extension-id", state: "in_progress", filename: "/tmp/clip.mp4" },
-        ];
-      },
-    },
-  };
-
-  const item = await latestDownload(chromeApi);
-  assert.deepEqual(query, { orderBy: ["-startTime"], limit: 100 });
-  assert.equal(item.filename, "/tmp/clip.mp4");
-  assert.equal(downloadStatus(item), "正在下载 · clip.mp4");
-  assert.equal(downloadStatus(null), "还没有下载记录。");
 });
 
 test("waitForDownload follows one Chrome ID through its terminal state and removes its listener", async () => {

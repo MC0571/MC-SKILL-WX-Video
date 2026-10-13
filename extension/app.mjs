@@ -1,6 +1,5 @@
 import { API_URLS, ParseError } from "../src/core.mjs";
 import { isSafeRelativeMp4Filename, safeDownloadFilename } from "../src/download-filename.mjs";
-import { loadDownloadHistoryPage } from "./download-history.mjs";
 import { initializeEngagementUi } from "./engagement.mjs";
 import { initializeDownloadHistoryUi } from "./history-ui.mjs";
 
@@ -260,21 +259,6 @@ export async function waitForDownload(downloadId, chromeApi = globalThis.chrome,
   });
 }
 
-export async function latestDownload(chromeApi = globalThis.chrome) {
-  const { items } = await loadDownloadHistoryPage(chromeApi, { pageSize: 1, order: "desc" });
-  return items[0] ?? null;
-}
-
-export function downloadStatus(item) {
-  if (!item) return "还没有下载记录。";
-  const filename = item.filename?.split(/[\\/]/).pop();
-  const label = filename ? ` · ${filename}` : "";
-  if (item.state === "in_progress") return `正在下载${label}`;
-  if (item.state === "complete") return `下载完成${label}`;
-  if (item.state === "interrupted") return `下载中断${label}`;
-  return `下载状态未知${label}`;
-}
-
 function initializePage() {
   initializeEngagementUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
   initializeDownloadHistoryUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
@@ -291,7 +275,6 @@ function initializePage() {
   const downloadButton = document.querySelector("#download-button");
   const downloadStatusElement = document.querySelector("#download-status");
   let result = null;
-  let visibleDownloadId = null;
   let parseGeneration = 0;
   let downloadInProgress = false;
   let metadataListeners = [];
@@ -301,16 +284,6 @@ function initializePage() {
     parseStatus.textContent = message;
     parseStatus.dataset.error = String(isError);
   };
-
-  async function refreshDownloadStatus() {
-    try {
-      const item = await latestDownload(chrome);
-      visibleDownloadId = item?.id ?? null;
-      downloadStatusElement.textContent = downloadStatus(item);
-    } catch {
-      downloadStatusElement.textContent = "暂时无法读取下载状态。";
-    }
-  }
 
   function clearMediaVariants() {
     parseGeneration += 1;
@@ -427,7 +400,7 @@ function initializePage() {
         downloadUrl,
       });
       if (!response?.ok) throw new Error("DOWNLOAD_START_FAILED");
-      await refreshDownloadStatus();
+      downloadStatusElement.textContent = "";
     } catch {
       downloadStatusElement.textContent = "下载无法启动，请检查浏览器下载设置。";
     } finally {
@@ -490,11 +463,6 @@ function initializePage() {
   downloadButton.addEventListener("click", () => {
     if (result) void downloadMedia(result.downloadUrl);
   });
-
-  chrome.downloads.onChanged.addListener((delta) => {
-    if (delta.id === visibleDownloadId) void refreshDownloadStatus();
-  });
-  void refreshDownloadStatus();
 }
 
 if (typeof document !== "undefined" && document.querySelector("#parse-form") && globalThis.chrome?.downloads) {

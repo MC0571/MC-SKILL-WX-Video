@@ -1,5 +1,4 @@
 import { LINKS } from "./config.mjs";
-import { getInstallSource } from "./update-state.mjs";
 
 export const FIRST_OPEN_GUIDE_KEY = "weixin-channels-video:first-open-guide-shown";
 export const FIRST_SUCCESSFUL_PARSE_KEY = "weixin-channels-video:first-successful-parse-at";
@@ -44,12 +43,12 @@ export function initializeEngagementUi({
 
   let currentState = {};
   let changedState = {};
-  let storeInstall = false;
+  let stateLoaded = false;
   let active = true;
 
   const renderReviewPrompt = () => {
     if (reviewPrompt) {
-      reviewPrompt.hidden = !storeInstall ||
+      reviewPrompt.hidden = !stateLoaded ||
         !Number.isFinite(currentState[FIRST_SUCCESSFUL_PARSE_KEY]) ||
         currentState[REVIEW_PROMPT_HANDLED_KEY] === true;
     }
@@ -94,13 +93,10 @@ export function initializeEngagementUi({
     chromeApi?.storage?.onChanged?.removeListener?.(onStorageChanged);
   }, { once: true });
 
-  void Promise.all([
-    getInstallSource(chromeApi),
-    storage.get([FIRST_OPEN_GUIDE_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY]),
-  ]).then(([source, stored]) => {
+  void storage.get([FIRST_OPEN_GUIDE_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY]).then((stored) => {
     if (!active) return;
     currentState = { ...stored, ...changedState };
-    storeInstall = source === "store";
+    stateLoaded = true;
     if (guide && currentState[FIRST_OPEN_GUIDE_KEY] !== true) {
       guide.hidden = false;
       currentState[FIRST_OPEN_GUIDE_KEY] = true;

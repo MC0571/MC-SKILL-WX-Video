@@ -662,8 +662,11 @@ video[hidden] {
 }
 
 .recent-download-status {
-  margin-top: 10px;
   font-size: 12px;
+}
+
+.recent-download-status:not(:empty) {
+  margin-top: 10px;
 }
 
 .download-history-list {
