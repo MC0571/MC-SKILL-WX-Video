@@ -23,21 +23,22 @@ Skill 和 Chrome 扩展分别构建、发布和更新。CLI 与 host 随同一�
 
 ## 连接与登录状态
 
-先在目标 Chrome 用户中打开 `chrome://extensions`，找到当前安装的本扩展并打开“详情”，复制页面显示的扩展 ID。以当前安装为准；旧桥接配置、提示词或另一 Chrome 用户中的记录都不能证明目标用户当前安装了哪个 ID。再用此 ID 安装桥接：
+如果用户提供的扩展“Agent 设置”提示词包含扩展 ID 和实例 UUID，这两个值就是目标 Chrome 用户的当前身份；复制该提示词表示用户选定了这个实例。先用这组身份检查并复用现有桥接：
 
 ```sh
-node <skill-root>/scripts/run.mjs install-bridge --extension-id <extension-id>
+node <skill-root>/scripts/run.mjs connect --instance <prompt-instance-uuid> --extension-id <prompt-extension-id>
 ```
 
-每个 Chrome 扩展实例在自己的 `storage.local` 中生成稳定 UUID。桥接为每个实例创建独立私有 endpoint 和 discovery record；Native Messaging host 的 `allowed_origins` 与收到的扩展 `origin` 都按登记的真实扩展 ID 校验。扩展在后台启动及持久 alarm 恢复时自动发现桥接并连接；不要求打开或保留扩展页面，也不使用配对码或临时连接页。桥接安装后需有一次 CLI 与扩展之间真实 status 往返才算连接就绪；这一步不要求元宝已登录。
-
-连接时可重复传入刚从目标 Chrome 扩展详情页复制的 ID：
+只有 `connect` 明确报告 `BRIDGE_NOT_CONFIGURED` 或 `BRIDGE_EXTENSION_MISMATCH` 时，才按提示词中的扩展 ID 登记或修复桥接，并重试同一条 `connect` 命令：
 
 ```sh
-node <skill-root>/scripts/run.mjs connect --extension-id <actual-id>
+node <skill-root>/scripts/run.mjs install-bridge --extension-id <prompt-extension-id>
+node <skill-root>/scripts/run.mjs connect --instance <prompt-instance-uuid> --extension-id <prompt-extension-id>
 ```
 
-CLI 先将这个 ID 与当前桥接登记的 ID 比对；不一致时会在读取 session、发现实例或启动 Chrome 前停止。确认目标 Chrome 安装的 ID 已变化后，用当前 ID 重新运行 `install-bridge` 更新登记。更换 ID 会清除桥接中旧的 profile 选择；同一 ID 和同一 Chrome 用户目录下重新登记会保留已确认的 profile 选择。通常连接无需读取 Chrome profile 元数据；只有用户明确选择 profile 时，才在安装桥接时传 `--profile <name-or-directory>`。
+每个 Chrome 扩展实例在自己的 `storage.local` 中生成稳定 UUID。桥接为每个实例创建独立私有 endpoint 和 discovery record；Native Messaging host 的 `allowed_origins` 与收到的扩展 `origin` 都按登记的真实扩展 ID 校验。扩展在后台启动及持久 alarm 恢复时自动发现桥接并连接；不要求打开或保留扩展页面，也不使用配对码或临时连接页。桥接安装后需有一次 CLI 与扩展之间真实 status 往返才算连接就绪；这一步不要求元宝已登录。`connect --instance` 只检查并绑定指定 UUID；若该实例离线，不会切换到另一 Chrome 用户。此时请在选定用户中打开 Chrome 并重试，或从该用户的“Agent 设置”重新复制提示词；不要用空的 `connections` 结果作为重登记或扫描 profile 的依据。
+
+提示词如果缺少扩展 ID 或实例 UUID，先请用户在目标 Chrome 用户中重新复制。只有无法重新复制的旧提示词才走人工兼容步骤：请用户在该 Chrome 用户打开 `chrome://extensions` 并从扩展详情复制实际 ID。先用该 ID 运行 `connect --extension-id <actual-id>` 检查并复用桥接；只有命令明确报告 `BRIDGE_NOT_CONFIGURED` 或 `BRIDGE_EXTENSION_MISMATCH` 时，才运行 `install-bridge --extension-id <actual-id>`，然后重试连接。旧提示词没有实例选择时，才使用下文的在线候选选择流程；旧桥接登记、诊断元数据和其他 Chrome 用户中的记录都不能代替当前身份。通常连接无需读取 Chrome profile 元数据；只有用户明确选择 profile 时，才在安装桥接时传 `--profile <name-or-directory>`。
 
 查看可用连接：
 
@@ -45,13 +46,13 @@ CLI 先将这个 ID 与当前桥接登记的 ID 比对；不一致时会在读�
 node <skill-root>/scripts/run.mjs connections
 ```
 
-结果只列出完成认证且收到扩展真实 status 响应的 active 候选。发现时读取快照，不等待元宝网络。只有一个候选时，本次任务可直接使用它，CLI 不保存选择；多个候选时停止并报告歧义，请用户指定实例。用户确认后可通过 `connect --instance <UUID>` 持久绑定该实例。绑定后实例离线时报告离线，不切换到其他用户；未选择实例时不扫描 profile metadata。profile 只影响 Chrome 启动目标。
+用户提供的提示词含有实例 UUID 时，以上述 UUID 执行 `connect --instance <UUID> --extension-id <extension-id>`；优先遵守这项明确选择，不运行 `connections` 来另选候选。只有旧提示词缺少实例 UUID 时，才使用本节流程。`connections` 只列出完成认证且收到扩展真实 status 响应的 active 候选。发现时读取快照，不等待元宝网络。只有一个候选时，本次任务可直接使用它，CLI 不保存选择；多个候选时停止并报告歧义，请用户指定实例。用户确认后可通过 `connect --instance <UUID> --extension-id <actual-id>` 持久绑定该实例。绑定后实例离线时报告离线，不切换到其他用户；未选择实例时不扫描 profile metadata。profile 只影响 Chrome 启动目标。
 
 开始解析或下载前，读取实例保存的登录 snapshot。快照含 `login`、`checkedAt`（Unix epoch 毫秒或 `null`）及可选错误类别；状态为 `authenticated`、`anonymous`、`failed` 或 `not_checked`。扩展以单一五分钟 heartbeat 更新快照，并在页面打开时强制刷新。查询登录状态或准备新任务时，仅在 snapshot 未知或过期时请求刷新，已有新鲜 snapshot 会复用。扩展响应本身证明桥接往返，不依赖元宝请求成功。明确 `anonymous` 时停止解析/下载并请用户登录；`failed` 表示登录检查失败，不能当作未登录，也不表示桥接连接失败。解析请求收到 `AUTH_EXPIRED` 时，扩展同步将 snapshot 标为匿名。
 
 每次 `connect` 的总等待上限为 90 秒。`running` 时复用 Chrome 并等待扩展后台恢复；只有 Chrome 明确为 `not_running`、且桥接登记了用户确认的 profile 时，才后台启动一次该 Chrome 用户，不附带 URL。macOS 使用 `open -g`；Windows 使用 `--no-startup-window` 启动正常 Chrome，不使用 headless 或远程调试。若目标 profile 未确认或进程状态为 `unknown`，请用户手动打开所选 Chrome 用户后再继续；不得猜测目标、反复启动 Chrome 或循环重试。Windows 实机前台焦点行为尚未验证。
 
-连接失败时，最多运行一次 `diagnose`，然后给出一个具体的人工检查或修复动作并等待用户完成；不要循环等待、重启或重装。诊断中的 profile 和扩展元数据只是辅助线索，不证明当前安装状态或实时连接。遇到 `EPERM` 或 `EACCES` 时停止 profile 扫描，不扩大权限或搜索整个磁盘；请用户在所选 Chrome 用户中打开 `chrome://extensions`，进入本扩展详情并复制当前扩展 ID，再按需要更新桥接登记。
+连接失败时，最多运行一次 `diagnose`，然后给出一个具体的人工检查或修复动作并等待用户完成；不要循环等待、重启或重装。诊断中的 profile 和扩展元数据只是辅助线索，不证明当前安装状态或实时连接。遇到 `EPERM` 或 `EACCES` 时停止 profile 扫描，不扩大权限或搜索整个磁盘；使用当前提示词提供的身份，过期或缺失时请用户从所选 Chrome 用户的“Agent 设置”重新复制。只有无法重新复制时才走上述人工兼容步骤，不因目录权限错误重新登记桥接。
 
 旧 Native Messaging wire v1 配对的扩展与新版 host 保持给旧 CLI 使用。新版 CLI 遇到 legacy 配置时明确提示升级，不回退到旧握手。新版扩展遇到旧 host 时，用 `install-bridge --extension-id <extension-id>` 更新桥接。同一扩展 ID、Chrome 用户目录与 profile 身份下，已有 IPC protocol 2 私有配置和 secret 在更新时保留；各组件版本按实际握手结果报告。
 

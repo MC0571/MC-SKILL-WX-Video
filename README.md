@@ -32,7 +32,7 @@
 
 视频保存位置遵循 Chrome 下载设置。默认文件名是清理后的短标题和浏览器本地日期（`短标题_YYYYMMDD.mp4`）；显式相对 `.mp4` 文件名按原路径传给 Chrome，重名时由 Chrome 自动追加后缀。H.264、H.265 是编码名称；接口未返回的画质不会生成下载链接。
 
-标题区的“Agent 设置”可打开完整安装提示词。提示词不包含扩展 ID；AI 会安装 Skill，并在注册桥接时使用你当前选定扩展的实际 ID。
+标题区的“Agent 设置”可打开完整安装提示词，其中会自动填入当前 Chrome 用户的实际扩展 ID 和稳定实例 UUID。把提示词交给目标 Agent 即表示选定这个 Chrome 用户；AI 会按 Skill 指引检查或修复桥接并连接该实例，不需要手动查找或复制 ID。
 
 ![Agent 设置](docs/images/agent-settings.jpg)
 
@@ -55,12 +55,23 @@ npx --yes skills add MC0571/weixin-channels-video --global --yes --skill weixin-
 https://weixin.qq.com/sph/你的分享链接
 ```
 
-需要自己操作时，先在目标 Chrome 用户打开 `chrome://extensions`，找到本扩展并打开“详情”，复制当前扩展 ID。旧桥接配置不能证明当前安装的 ID。然后在安装后的 Skill 目录执行：
+如果收到的是旧提示词且没有扩展 ID 或实例 UUID，先在目标 Chrome 用户的“Agent 设置”中重新复制。无法重新复制旧提示词时，才手动打开该用户的 `chrome://extensions`，找到本扩展并打开“详情”，复制当前扩展 ID；旧桥接配置不能证明当前安装的 ID。在安装后的 Skill 目录先检查并连接：
 
 ```sh
 node scripts/run.mjs prepare
+node scripts/run.mjs connect --extension-id '粘贴同一扩展 ID'
+```
+
+只有 `connect` 明确报告 `BRIDGE_NOT_CONFIGURED` 或 `BRIDGE_EXTENSION_MISMATCH` 时，才用该 Chrome 用户的实际 ID 更新桥接，然后重试 `connect`：
+
+```sh
 node scripts/run.mjs install-bridge --extension-id '粘贴当前扩展 ID'
 node scripts/run.mjs connect --extension-id '粘贴同一扩展 ID'
+```
+
+连接成功后再查看状态或下载：
+
+```sh
 node scripts/run.mjs status
 node scripts/run.mjs download --url 'https://weixin.qq.com/sph/你的分享链接'
 ```
