@@ -1004,7 +1004,7 @@ test("store update notifies an already open page after persisting update state",
   assert.equal(card.children[0].textContent, "已下载扩展更新 v0.2.5。");
 });
 
-test("external update notice is dismissible without clearing update state", async () => {
+function createUpdateUiHarness(state) {
   class Element {
     constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; this.listeners = new Map(); }
     get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
@@ -1020,7 +1020,6 @@ test("external update notice is dismissible without clearing update state", asyn
   const inputCard = new Element("section");
   inputCard.className = "input-card";
   shell.append(header, inputCard);
-  let state = { ok: true, source: "external", version: "0.2.4", releaseStatus: "unknown", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" };
   let onMessage;
   const sentMessages = [];
   const documentApi = {
@@ -1035,8 +1034,50 @@ test("external update notice is dismissible without clearing update state", asyn
   };
   initializeUpdateUi({ documentApi, chromeApi });
   const card = shell.children[1];
+  return {
+    card,
+    sentMessages,
+    async refresh(nextState) {
+      state = nextState;
+      onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
+      await new Promise(setImmediate);
+    },
+  };
+}
+
+test("unknown update checks remain visible without offering update actions", async () => {
+  for (const [state, expectedMessage] of [
+    [{ ok: true, source: "external", releaseStatus: "unknown", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" }, "暂时无法检查扩展更新，请稍后再试。"],
+    [{ ok: true, source: "unknown" }, "暂时无法确认扩展安装来源，无法检查更新。"],
+  ]) {
+    const { card, sentMessages, refresh } = createUpdateUiHarness(state);
+    await new Promise(setImmediate);
+    assert.equal(card.hidden, false);
+    assert.equal(card.children[0].textContent, expectedMessage);
+    assert.equal(card.children[1].hidden, true, "an unknown check does not invent a release link");
+    assert.equal(card.children[2].hidden, true, "an unknown check does not offer apply or later");
+    assert.equal(card.children[3].hidden, false);
+    card.children[3].click();
+    assert.equal(card.hidden, true);
+    await refresh(state);
+    assert.equal(card.hidden, true, "the same dismissed failure stays hidden on this page");
+    assert.equal(sentMessages.some((message) => message.type === UPDATE_ACTION_TYPE), false);
+
+    const reopened = createUpdateUiHarness(state);
+    await new Promise(setImmediate);
+    assert.equal(reopened.card.hidden, false, "closing a failure does not persist a successful check");
+    await reopened.refresh({ ...state, source: "external", releaseStatus: "current" });
+    assert.equal(reopened.card.hidden, true, "a successful later check clears the failure notice");
+  }
+});
+
+test("external update notice is dismissible without clearing update state", async () => {
+  let state = { ok: true, source: "external", version: "0.2.4", releaseStatus: "current", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" };
+  const { card, sentMessages, refresh } = createUpdateUiHarness(state);
   await new Promise(setImmediate);
-  assert.equal(card.hidden, true, "routine unknown state stays out of the way");
+  assert.equal(card.hidden, true, "a successful check with no newer release stays out of the way");
+  await refresh({ ...state, releaseStatus: "checking" });
+  assert.equal(card.hidden, true, "an in-progress check does not report failure or a new release");
 
   state = {
     ...state,
@@ -1044,8 +1085,7 @@ test("external update notice is dismissible without clearing update state", asyn
     releaseVersion: "0.2.5",
     releaseChangelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5",
   };
-  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
-  await new Promise(setImmediate);
+  await refresh(state);
   assert.equal(card.hidden, false);
   assert.equal(card.children[0].textContent, "扩展有新版 v0.2.5。请按原安装方式更新。");
   assert.equal(card.children[1].href, state.releaseChangelogUrl);
@@ -1055,14 +1095,50 @@ test("external update notice is dismissible without clearing update state", asyn
   assert.equal(card.hidden, true);
   assert.equal(sentMessages.some((message) => message.action === "acknowledge-updated"), false);
 
-  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
-  await new Promise(setImmediate);
+  await refresh(state);
   assert.equal(card.hidden, true, "closing hides this version for the current page only");
   state.releaseVersion = "0.2.6";
   state.releaseChangelogUrl = "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.6";
-  onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
-  await new Promise(setImmediate);
+  await refresh(state);
   assert.equal(card.hidden, false, "a newly available version can be shown later");
+});
+
+test("updated notice is acknowledged on render and can be closed for the current page", async () => {
+  const state = {
+    ok: true,
+    source: "external",
+    updated: { version: "0.2.5", changelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5" },
+  };
+  const { card, sentMessages, refresh } = createUpdateUiHarness(state);
+  await new Promise(setImmediate);
+  assert.equal(card.hidden, false);
+  assert.equal(card.children[0].textContent, "扩展已更新到 v0.2.5。");
+  assert.equal(card.children[1].hidden, false);
+  assert.equal(card.children[1].href, state.updated.changelogUrl);
+  assert.equal(card.children[2].hidden, true);
+  assert.equal(card.children[3].hidden, false);
+  const acknowledgements = () => sentMessages.filter((message) => message.action === "acknowledge-updated");
+  assert.equal(acknowledgements().length, 1, "rendering still acknowledges without waiting for dismissal");
+
+  card.children[3].click();
+  assert.equal(card.hidden, true);
+  assert.equal(acknowledgements().length, 1, "closing does not send another acknowledgement");
+  await refresh(state);
+  assert.equal(card.hidden, true, "a repeated same-version response cannot reopen the dismissed notice");
+  assert.equal(acknowledgements().length, 1);
+
+  const reopened = createUpdateUiHarness(state);
+  await new Promise(setImmediate);
+  assert.equal(reopened.card.hidden, false, "dismissal remains page-local if acknowledgement has not cleared stored state");
+  await refresh({ ...state, updated: null });
+  assert.equal(card.hidden, true, "an acknowledged update is not shown again");
+  await refresh({ ...state, updated: {
+    version: "0.2.6",
+    changelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.6",
+  } });
+  assert.equal(card.hidden, false, "a different running version can show its own notice");
+  assert.equal(card.children[0].textContent, "扩展已更新到 v0.2.6。");
+  assert.equal(acknowledgements().length, 2);
 });
 
 test("store update reload waits for an active feed response to finish", async () => {
