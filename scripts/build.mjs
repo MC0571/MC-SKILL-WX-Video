@@ -40,6 +40,7 @@ const EXTENSION_ASSETS = [
   'icons/copy.svg',
   'icons/terminal.svg',
   'icons/github.svg',
+  'icons/Icons8-LICENSE.txt',
   'icons/agents/codex.png',
   'icons/agents/chatgpt.svg',
   'icons/agents/claude.svg',

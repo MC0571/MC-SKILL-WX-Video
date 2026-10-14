@@ -771,68 +771,18 @@ test("successful Agent parses trigger the shared first-success hook without open
   assert.deepEqual(successes, ["agent"]);
 });
 
-test("update notice mounts beside the header so it stays visible on the history page", async () => {
-  class Element {
-    constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; }
-    get nextSibling() {
-      if (!this.parentNode) return null;
-      return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] ?? null;
-    }
-    append(...children) {
-      for (const child of children) {
-        child.parentNode = this;
-        this.children.push(child);
-      }
-    }
-    insertBefore(child, reference) {
-      if (reference && reference.parentNode !== this) throw new Error("reference is not a child");
-      child.parentNode = this;
-      const index = reference ? this.children.indexOf(reference) : this.children.length;
-      this.children.splice(index, 0, child);
-    }
-    setAttribute() {}
-    addEventListener() {}
-  }
-
-  const shell = new Element("main");
-  const header = new Element("header");
-  header.className = "page-header";
-  const homeView = new Element("div");
-  const inputCard = new Element("section");
-  inputCard.className = "input-card";
-  const historyView = new Element("section");
-  historyView.hidden = true;
-  shell.append(header, homeView, historyView);
-  homeView.append(inputCard);
-  const documentApi = {
-    querySelector(selector) {
-      return selector === ".shell" ? shell
-        : selector === ".input-card" ? inputCard
-          : selector === ".page-header" ? header
-            : null;
-    },
-    createElement: (tagName) => new Element(tagName),
-  };
-
-  initializeUpdateUi({ documentApi, chromeApi: { runtime: { sendMessage: async () => ({ ok: true, source: "unknown" }) } } });
-
-  assert.equal(shell.children[1].className, "card update-card");
-  assert.equal(homeView.children[0], inputCard);
-  assert.equal(shell.children[2], homeView);
-  assert.equal(shell.children[3], historyView);
-});
-
 test("external installs check only stable extension releases and cache the result", async () => {
   const storage = new Map();
   const requests = [];
   const notifications = [];
   const badgeTexts = [];
   let currentTime = 1_000_000;
+  let installedVersion = "0.2.4";
   const chromeApi = {
     management: { getSelf: async () => ({ id: "unpacked-id", installType: "development" }) },
     action: { setBadgeText: async ({ text }) => { badgeTexts.push(text); } },
     runtime: {
-      getManifest: () => ({ version: "0.2.4" }),
+      getManifest: () => ({ version: installedVersion }),
       sendMessage: async (message) => { notifications.push(message); },
     },
     storage: { local: {
@@ -855,7 +805,9 @@ test("external installs check only stable extension releases and cache the resul
       requests.push({ url, init });
       const page = new URL(url).searchParams.get("page");
       return Response.json(page === "1" ? olderReleases : [
-        { tag_name: "extension-v0.2.5", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v0.2.5.zip" }] },
+        { tag_name: "extension-v0.2.5", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v0.2.5.zip", browser_download_url: "https://untrusted.example/extension.zip" }] },
+        { tag_name: "extension-v9.0.0", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v9.0.0.zip.exe" }] },
+        { tag_name: "extension-v9.0.0/other", draft: false, prerelease: false, assets: [{ name: "weixin-channels-video-extension-v9.0.0.zip" }] },
         { tag_name: "skill-v99.0.0", draft: false, prerelease: false },
       ]);
     },
@@ -863,13 +815,15 @@ test("external installs check only stable extension releases and cache the resul
 
   const initialState = await manager.getState();
   assert.equal(initialState.releaseStatus, "checking");
+  assert.equal(initialState.releaseDownloadUrl, null);
   for (let attempt = 0; attempt < 20 && notifications.length === 0; attempt += 1) await new Promise(setImmediate);
   assert.equal(notifications[0].type, UPDATE_STATE_CHANGED_TYPE);
   const checkedState = await manager.getState();
   assert.equal(checkedState.releaseStatus, "available");
   assert.equal(checkedState.releaseVersion, "0.2.5");
   assert.equal(checkedState.releaseChangelogUrl, "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5");
-  assert.equal(badgeTexts.at(-1), "更新");
+  assert.equal(checkedState.releaseDownloadUrl, "https://github.com/MC0571/weixin-channels-video/releases/download/extension-v0.2.5/weixin-channels-video-extension-v0.2.5.zip");
+  assert.equal(badgeTexts.at(-1), "NEW");
   assert.equal(requests.length, 2);
   assert.deepEqual(requests.map(({ url }) => url), [
     "https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=1",
@@ -891,6 +845,10 @@ test("external installs check only stable extension releases and cache the resul
   assert.equal((await manager.getState()).releaseVersion, "0.2.5");
   assert.equal(requests.length, 4);
   assert.equal(storage.has(RELEASE_CHECK_STORAGE_KEY), true);
+
+  installedVersion = "0.2.5";
+  assert.equal((await manager.getState()).releaseStatus, "current");
+  assert.equal(badgeTexts.at(-1), "");
 });
 
 test("failed or malformed release checks remain unknown", async () => {
@@ -944,11 +902,83 @@ test("legacy stable releases count only when they include the extension archive"
   assert.equal(state.releaseStatus, "available");
   assert.equal(state.releaseVersion, "0.3.0");
   assert.equal(state.releaseChangelogUrl, "https://github.com/MC0571/weixin-channels-video/releases/tag/v0.3.0");
+  assert.equal(state.releaseDownloadUrl, "https://github.com/MC0571/weixin-channels-video/releases/download/v0.3.0/weixin-channels-video-extension-v0.3.0.zip");
+});
+
+test("release downloads require a cached tag that matches the validated version", async () => {
+  for (const [tag, expectedTag] of [
+    ["extension-v0.3.0", "extension-v0.3.0"],
+    ["v0.3.0", "v0.3.0"],
+    [undefined, null],
+    ["extension-v0.4.0", null],
+    ["extension-v0.3.0/../../other", null],
+    ["extension-v0.3.0?download=other", null],
+  ]) {
+    const chromeApi = {
+      management: { getSelf: async () => ({ id: "unpacked-id", installType: "development" }) },
+      action: { setBadgeText: async () => {} },
+      runtime: { getManifest: () => ({ version: "0.2.4" }) },
+      storage: { local: { async get(key) {
+        return { [key]: key === RELEASE_CHECK_STORAGE_KEY
+          ? { status: "checked", latestVersion: "0.3.0", latestTag: tag, checkedAt: 1_000_000 }
+          : {} };
+      } } },
+    };
+    const manager = createUpdateStateManager({ chromeApi, now: () => 1_000_000 });
+    const state = await manager.getState();
+    assert.equal(state.releaseDownloadUrl, expectedTag
+      ? `https://github.com/MC0571/weixin-channels-video/releases/download/${expectedTag}/weixin-channels-video-extension-v0.3.0.zip`
+      : null, String(tag));
+  }
+});
+
+test("store workers restore NEW from saved update state without losing apply or later choices", async () => {
+  const storage = new Map();
+  const badgeTexts = [];
+  let version = "0.2.4";
+  const chromeApi = {
+    management: { getSelf: async () => ({ id: STORE_EXTENSION_ID, installType: "normal" }) },
+    action: { setBadgeText: async ({ text }) => { badgeTexts.push(text); } },
+    runtime: { getManifest: () => ({ version }), sendMessage: async () => {} },
+    storage: { local: {
+      async get(key) { return { [key]: storage.get(key) }; },
+      async set(values) { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+    } },
+  };
+  let manager = createUpdateStateManager({ chromeApi });
+  await manager.updateAvailable("0.2.5");
+  assert.equal(badgeTexts.at(-1), "NEW");
+  assert.equal((await manager.apply()).status, "waiting");
+
+  badgeTexts.length = 0;
+  manager = createUpdateStateManager({ chromeApi });
+  await manager.installed({ reason: "startup" });
+  assert.deepEqual(badgeTexts, ["NEW"]);
+  assert.equal((await manager.getState()).applyRequested, true);
+  assert.equal((await manager.later()).status, "available");
+  assert.equal((await manager.getState()).applyRequested, false);
+
+  badgeTexts.length = 0;
+  manager = createUpdateStateManager({ chromeApi });
+  await manager.installed({ reason: "startup" });
+  assert.deepEqual(badgeTexts, ["NEW"]);
+  assert.equal((await manager.getState()).applyRequested, false);
+
+  version = "0.2.5";
+  await manager.installed({ reason: "update", previousVersion: "0.2.4" });
+  assert.equal(badgeTexts.at(-1), "");
+  assert.equal((await manager.getState()).status, "none");
+  assert.equal((await manager.getState()).updated.version, "0.2.5");
+  await manager.acknowledgeUpdated();
+  assert.equal((await manager.getState()).updated, null);
+  badgeTexts.length = 0;
+  await manager.installed({ reason: "startup" });
+  assert.deepEqual(badgeTexts, [""]);
 });
 
 test("store update notifies an already open page after persisting update state", async () => {
   class Element {
-    constructor() { this.children = []; this.hidden = false; }
+    constructor() { this.children = []; this.hidden = false; this.listeners = new Map(); }
     get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
     append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
     insertBefore(child, reference) {
@@ -956,11 +986,16 @@ test("store update notifies an already open page after persisting update state",
       this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, child);
     }
     setAttribute() {}
-    addEventListener() {}
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    click() { return this.listeners.get("click")?.(); }
   }
   const shell = new Element();
   const header = new Element();
   header.className = "page-header";
+  const title = new Element();
+  const version = new Element();
+  title.append(version);
+  header.append(title);
   const inputCard = new Element();
   inputCard.className = "input-card";
   shell.append(header, inputCard);
@@ -989,54 +1024,56 @@ test("store update notifies an already open page after persisting update state",
   };
   manager = createUpdateStateManager({ chromeApi });
   const documentApi = {
-    querySelector(selector) { return selector === ".shell" ? shell : selector === ".input-card" ? inputCard : selector === ".page-header" ? header : null; },
+    querySelector(selector) { return selector === ".shell" ? shell : selector === ".input-card" ? inputCard : selector === ".page-header" ? header : selector === "#extension-version" ? version : null; },
     createElement: () => new Element(),
   };
 
   initializeUpdateUi({ documentApi, chromeApi });
-  const card = shell.children[1];
+  const flag = title.children[1];
   await new Promise(setImmediate);
-  assert.equal(card.hidden, true, "the open page initially has no available update");
+  assert.equal(flag.hidden, true, "the open page initially has no available update");
 
   await manager.updateAvailable("0.2.5");
   await new Promise(setImmediate);
-  assert.equal(card.hidden, false);
-  assert.equal(card.children[0].textContent, "已下载扩展更新 v0.2.5。");
+  assert.equal(version.hidden, true);
+  assert.match(flag.children[0].src, /^data:image\/png;base64,/);
+  assert.equal(flag.hidden, false);
+  assert.equal(flag.href, `https://chromewebstore.google.com/detail/${STORE_EXTENSION_ID}`);
+  assert.equal(shell.children.length, 2, "no update card is added");
 });
 
 function createUpdateUiHarness(state) {
   class Element {
-    constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; this.listeners = new Map(); }
-    get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
+    constructor(tagName) { this.tagName = tagName; this.children = []; this.hidden = false; this.attributes = new Map(); this.listeners = new Map(); }
     append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
-    insertBefore(child, reference) { child.parentNode = this; this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, child); }
-    setAttribute() {}
+    setAttribute(name, value) { this.attributes.set(name, value); }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
-    click() { this.listeners.get("click")?.(); }
+    click() { return this.listeners.get("click")?.(); }
   }
-  const shell = new Element("main");
-  const header = new Element("header");
-  header.className = "page-header";
-  const inputCard = new Element("section");
-  inputCard.className = "input-card";
-  shell.append(header, inputCard);
+  const title = new Element("h1");
+  const version = new Element("span");
+  version.textContent = "v0.2.4";
+  title.append(version);
   let onMessage;
   const sentMessages = [];
+  const createdTabs = [];
   const documentApi = {
-    querySelector(selector) { return selector === ".shell" ? shell : selector === ".input-card" ? inputCard : selector === ".page-header" ? header : null; },
+    querySelector: (selector) => selector === "#extension-version" ? version : null,
     createElement: (tagName) => new Element(tagName),
   };
   const chromeApi = {
+    tabs: { create: async (properties) => { createdTabs.push(properties); } },
     runtime: {
       sendMessage: async (message) => { sentMessages.push(message); return state; },
       onMessage: { addListener(listener) { onMessage = listener; } },
     },
   };
   initializeUpdateUi({ documentApi, chromeApi });
-  const card = shell.children[1];
   return {
-    card,
+    version,
+    flag: title.children[1],
     sentMessages,
+    createdTabs,
     async refresh(nextState) {
       state = nextState;
       onMessage({ type: UPDATE_STATE_CHANGED_TYPE });
@@ -1045,100 +1082,93 @@ function createUpdateUiHarness(state) {
   };
 }
 
-test("unknown update checks remain visible without offering update actions", async () => {
-  for (const [state, expectedMessage] of [
-    [{ ok: true, source: "external", releaseStatus: "unknown", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" }, "暂时无法检查扩展更新，请稍后再试。"],
-    [{ ok: true, source: "unknown" }, "暂时无法确认扩展安装来源，无法检查更新。"],
+test("unknown update checks keep the version without a notice or NEW flag", async () => {
+  for (const state of [
+    { ok: true, source: "external", releaseStatus: "unknown" },
+    { ok: true, source: "unknown" },
   ]) {
-    const { card, sentMessages, refresh } = createUpdateUiHarness(state);
+    const { version, flag, sentMessages, refresh } = createUpdateUiHarness(state);
     await new Promise(setImmediate);
-    assert.equal(card.hidden, false);
-    assert.equal(card.children[0].textContent, expectedMessage);
-    assert.equal(card.children[1].hidden, true, "an unknown check does not invent a release link");
-    assert.equal(card.children[2].hidden, true, "an unknown check does not offer apply or later");
-    assert.equal(card.children[3].hidden, false);
-    card.children[3].click();
-    assert.equal(card.hidden, true);
+    assert.equal(version.hidden, false);
+    assert.equal(flag.hidden, true);
     await refresh(state);
-    assert.equal(card.hidden, true, "the same dismissed failure stays hidden on this page");
+    assert.equal(flag.hidden, true);
     assert.equal(sentMessages.some((message) => message.type === UPDATE_ACTION_TYPE), false);
-
-    const reopened = createUpdateUiHarness(state);
-    await new Promise(setImmediate);
-    assert.equal(reopened.card.hidden, false, "closing a failure does not persist a successful check");
-    await reopened.refresh({ ...state, source: "external", releaseStatus: "current" });
-    assert.equal(reopened.card.hidden, true, "a successful later check clears the failure notice");
   }
 });
 
-test("external update notice is dismissible without clearing update state", async () => {
-  let state = { ok: true, source: "external", version: "0.2.4", releaseStatus: "current", releaseUrl: "https://github.com/MC0571/weixin-channels-video/releases" };
-  const { card, sentMessages, refresh } = createUpdateUiHarness(state);
+test("external NEW replaces the version with a direct ZIP download", async () => {
+  let state = { ok: true, source: "external", version: "0.2.4", releaseStatus: "current" };
+  const { version, flag, sentMessages, createdTabs, refresh } = createUpdateUiHarness(state);
   await new Promise(setImmediate);
-  assert.equal(card.hidden, true, "a successful check with no newer release stays out of the way");
+  assert.equal(version.hidden, false);
+  assert.equal(flag.hidden, true);
   await refresh({ ...state, releaseStatus: "checking" });
-  assert.equal(card.hidden, true, "an in-progress check does not report failure or a new release");
+  assert.equal(flag.hidden, true);
 
   state = {
     ...state,
     releaseStatus: "available",
     releaseVersion: "0.2.5",
-    releaseChangelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5",
+    releaseDownloadUrl: "https://github.com/MC0571/weixin-channels-video/releases/download/extension-v0.2.5/weixin-channels-video-extension-v0.2.5.zip",
   };
   await refresh(state);
-  assert.equal(card.hidden, false);
-  assert.equal(card.children[0].textContent, "扩展有新版 v0.2.5。请按原安装方式更新。");
-  assert.equal(card.children[1].href, state.releaseChangelogUrl);
-  const dismissButton = card.children[3];
-  assert.equal(dismissButton.hidden, false);
-  dismissButton.click();
-  assert.equal(card.hidden, true);
-  assert.equal(sentMessages.some((message) => message.action === "acknowledge-updated"), false);
+  assert.equal(version.hidden, true);
+  assert.equal(flag.hidden, false);
+  assert.equal(flag.tagName, "a");
+  assert.equal(flag.children[0].tagName, "img");
+  assert.match(flag.children[0].src, /^data:image\/png;base64,/);
+  assert.equal(flag.href, state.releaseDownloadUrl);
+  assert.equal(flag.target, "_self", "the download does not open a GitHub page in another tab");
+  assert.match(flag.attributes.get("aria-label"), /下载扩展 v0\.2\.5 ZIP 安装包/);
+  await flag.click();
+  assert.deepEqual(createdTabs, [{ url: "chrome://extensions/" }]);
+  assert.equal(flag.href, state.releaseDownloadUrl, "opening extensions does not replace the native download link");
+  assert.equal(sentMessages.some((message) => message.type === UPDATE_ACTION_TYPE), false);
 
-  await refresh(state);
-  assert.equal(card.hidden, true, "closing hides this version for the current page only");
-  state.releaseVersion = "0.2.6";
-  state.releaseChangelogUrl = "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.6";
-  await refresh(state);
-  assert.equal(card.hidden, false, "a newly available version can be shown later");
+  await refresh({ ...state, releaseDownloadUrl: null });
+  assert.equal(flag.hidden, true, "no download is offered without a validated archive URL");
+  assert.equal(version.hidden, false);
+  await refresh({ ...state, releaseStatus: "current" });
+  assert.equal(flag.hidden, true);
+  assert.equal(version.hidden, false);
 });
 
-test("updated notice is acknowledged on render and can be closed for the current page", async () => {
+test("completed updates stay silent and do not mask a newer available update", async () => {
   const state = {
     ok: true,
     source: "external",
     updated: { version: "0.2.5", changelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.5" },
   };
-  const { card, sentMessages, refresh } = createUpdateUiHarness(state);
+  const { version, flag, sentMessages, refresh } = createUpdateUiHarness(state);
   await new Promise(setImmediate);
-  assert.equal(card.hidden, false);
-  assert.equal(card.children[0].textContent, "扩展已更新到 v0.2.5。");
-  assert.equal(card.children[1].hidden, false);
-  assert.equal(card.children[1].href, state.updated.changelogUrl);
-  assert.equal(card.children[2].hidden, true);
-  assert.equal(card.children[3].hidden, false);
-  const acknowledgements = () => sentMessages.filter((message) => message.action === "acknowledge-updated");
-  assert.equal(acknowledgements().length, 1, "rendering still acknowledges without waiting for dismissal");
+  assert.equal(version.hidden, false);
+  assert.equal(flag.hidden, true);
+  assert.equal(sentMessages.some((message) => message.type === UPDATE_ACTION_TYPE), false);
+  await refresh({ ...state, source: "store", status: "available", availableVersion: "0.2.6" });
+  assert.equal(flag.hidden, false);
+  assert.equal(version.hidden, true);
+});
 
-  card.children[3].click();
-  assert.equal(card.hidden, true);
-  assert.equal(acknowledgements().length, 1, "closing does not send another acknowledgement");
-  await refresh(state);
-  assert.equal(card.hidden, true, "a repeated same-version response cannot reopen the dismissed notice");
-  assert.equal(acknowledgements().length, 1);
-
-  const reopened = createUpdateUiHarness(state);
-  await new Promise(setImmediate);
-  assert.equal(reopened.card.hidden, false, "dismissal remains page-local if acknowledgement has not cleared stored state");
-  await refresh({ ...state, updated: null });
-  assert.equal(card.hidden, true, "an acknowledged update is not shown again");
-  await refresh({ ...state, updated: {
-    version: "0.2.6",
-    changelogUrl: "https://github.com/MC0571/weixin-channels-video/releases/tag/extension-v0.2.6",
-  } });
-  assert.equal(card.hidden, false, "a different running version can show its own notice");
-  assert.equal(card.children[0].textContent, "扩展已更新到 v0.2.6。");
-  assert.equal(acknowledgements().length, 2);
+test("store NEW links directly to the Chrome Web Store detail page", async () => {
+  const state = { ok: true, source: "store", status: "available", availableVersion: "0.2.5" };
+  const { version, flag, sentMessages, createdTabs, refresh } = createUpdateUiHarness(state);
+  for (const status of ["available", "waiting"]) {
+    await refresh({ ...state, status });
+    assert.equal(flag.hidden, false);
+    assert.equal(version.hidden, true);
+    assert.equal(flag.tagName, "a");
+    assert.equal(flag.href, `https://chromewebstore.google.com/detail/${STORE_EXTENSION_ID}`);
+    assert.equal(flag.target, "_blank");
+    assert.equal(flag.rel, "noreferrer");
+    assert.match(flag.attributes.get("aria-label"), /Chrome 商店查看扩展 v0\.2\.5/);
+    await flag.click();
+  }
+  assert.deepEqual(createdTabs, []);
+  assert.equal(sentMessages.some((message) => message.type === UPDATE_ACTION_TYPE), false);
+  await refresh({ ...state, status: "none" });
+  assert.equal(flag.hidden, true);
+  assert.equal(version.hidden, false);
 });
 
 test("store update reload waits for an active feed response to finish", async () => {

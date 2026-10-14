@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
+  <rect width="1400" height="560" fill="#FFFFFF"/>
+  <path d="M0 0h16v560H0z" fill="#07C160"/>
+
+  <text x="78" y="91" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="23" font-weight="650">视频号下载助手</text>
+  <text x="76" y="216" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="76" font-weight="800" letter-spacing="-2">轻松下载</text>
+  <text x="76" y="308" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="76" font-weight="800" letter-spacing="-2">视频号内容</text>
+  <text x="82" y="373" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="22" font-weight="500">先看标题和预览，再选择要保存的视频版本。</text>
+
+  <path d="M84 432v68" stroke="#07C160" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="121" cy="444" r="10" fill="#FA9D3B"/>
+  <text x="148" y="451" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="22" font-weight="700">AI 助手也能用</text>
+  <circle cx="355" cy="444" r="10" fill="#07C160"/>
+  <text x="382" y="451" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="22" font-weight="700">登录信息留在浏览器</text>
+  <text x="148" y="493" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="16" font-weight="500">无需把登录信息交给 AI 助手</text>
+
+  <circle cx="1085" cy="280" r="203" fill="#E5F8ED"/>
+  <image href="../images/logo.svg" x="915" y="110" width="340" height="340" preserveAspectRatio="xMidYMid meet"/>
+</svg>

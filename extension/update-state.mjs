@@ -4,7 +4,8 @@ export const UPDATE_STATE_CHANGED_TYPE = "weixin-channels-video:update-state-cha
 export const UPDATE_STORAGE_KEY = "weixin-channels-video:update-state";
 export const RELEASE_CHECK_STORAGE_KEY = "weixin-channels-video:release-check";
 export const STORE_EXTENSION_ID = "jdecfnemmnhbpamcfhmgjkcphgomgjoe";
-export const STORE_REVIEW_URL = `https://chromewebstore.google.com/detail/${STORE_EXTENSION_ID}/reviews`;
+export const STORE_EXTENSION_URL = `https://chromewebstore.google.com/detail/${STORE_EXTENSION_ID}`;
+export const STORE_REVIEW_URL = `${STORE_EXTENSION_URL}/reviews`;
 export const GITHUB_RELEASES_URL = "https://github.com/MC0571/weixin-channels-video/releases";
 const RELEASES_API_URL = "https://api.github.com/repos/MC0571/weixin-channels-video/releases?per_page=100&page=";
 const RELEASE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -68,7 +69,7 @@ export function createUpdateStateManager({
 
   async function syncExternalBadge(latestVersion) {
     const available = latestVersion && compareVersions(latestVersion, currentVersion()) > 0;
-    await chromeApi.action.setBadgeText({ text: available ? "更新" : "" });
+    await chromeApi.action.setBadgeText({ text: available ? "NEW" : "" });
   }
 
   async function notifyStateChanged() {
@@ -83,10 +84,13 @@ export function createUpdateStateManager({
     return extensionReleaseUrl(version) ? version : null;
   }
 
+  function extensionArchiveName(version) {
+    return `weixin-channels-video-extension-v${version}.zip`;
+  }
+
   function releaseHasExtensionArchive(release, version) {
     if (!Array.isArray(release.assets)) return false;
-    const archiveName = `weixin-channels-video-extension-v${version}.zip`;
-    return release.assets.some((asset) => asset?.name === archiveName);
+    return release.assets.some((asset) => asset?.name === extensionArchiveName(version));
   }
 
   function releaseUrl(tag) {
@@ -191,6 +195,9 @@ export function createUpdateStateManager({
       releaseChangelogUrl: releaseVersion
         ? releaseUrl(releaseCheck.latestTag ?? `extension-v${releaseVersion}`)
         : null,
+      releaseDownloadUrl: releaseVersion && parseExtensionTag(releaseCheck.latestTag) === releaseVersion
+        ? `${GITHUB_RELEASES_URL}/download/${encodeURIComponent(releaseCheck.latestTag)}/${extensionArchiveName(releaseVersion)}`
+        : null,
     };
   }
 
@@ -199,7 +206,7 @@ export function createUpdateStateManager({
     const stored = await readStoredState();
     await writeStoredState({ ...stored, availableVersion: version, applyRequested: false });
     await notifyStateChanged();
-    await chromeApi.action.setBadgeText({ text: "更新" });
+    await chromeApi.action.setBadgeText({ text: "NEW" });
   }
 
   async function installed(details) {
@@ -216,6 +223,8 @@ export function createUpdateStateManager({
     else if (stored.availableVersion && stored.availableVersion === version) {
       await writeStoredState({});
       await chromeApi.action.setBadgeText({ text: "" });
+    } else if (details?.reason === "startup" && await getInstallSource(chromeApi, storeExtensionId) === "store") {
+      await chromeApi.action.setBadgeText({ text: stored.availableVersion ? "NEW" : "" });
     }
   }
 
