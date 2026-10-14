@@ -336,7 +336,7 @@ test("Windows Chrome launch passes long profile paths as argv without a shell", 
   }]);
 });
 
-test("macOS Chrome launch stays in the background and opens no bootstrap URL", async () => {
+test("macOS Chrome launch requests no startup window and passes no bootstrap URL", async () => {
   await withChromeProfile(async ({ userDataDir, profileDirectory }) => {
     const config = { chromeUserDataDir: userDataDir, profileDirectory, extensionId: EXTENSION_ID };
     const calls = [];
@@ -348,7 +348,7 @@ test("macOS Chrome launch stays in the background and opens no bootstrap URL", a
     await launchChrome(config, SESSION_ID, { platform: "darwin", inspectChrome, processLauncher, inspectProfile: async () => { throw new Error("metadata may be inaccessible"); } });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].executable, "/usr/bin/open");
-    assert.deepEqual(calls[0].args, ["-g", "-a", "/Applications/Google Chrome.app", "--args", `--user-data-dir=${userDataDir}`, `--profile-directory=${profileDirectory}`]);
+    assert.deepEqual(calls[0].args, ["-g", "-a", "/Applications/Google Chrome.app", "--args", `--user-data-dir=${userDataDir}`, `--profile-directory=${profileDirectory}`, "--no-startup-window"]);
     assert.equal(calls[0].args.some((argument) => argument.startsWith("chrome-extension://")), false);
     assert.equal(calls[0].args.includes("--headless"), false);
     assert.equal(calls[0].args.some((argument) => argument.startsWith("--remote-debugging")), false);

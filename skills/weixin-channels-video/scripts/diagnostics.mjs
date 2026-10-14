@@ -207,7 +207,7 @@ export async function launchChrome(config, _sessionId, {
     }
     args.push(`--profile-directory=${profileDirectory}`);
   }
-  if (platform === "win32") args.push("--no-startup-window");
+  args.push("--no-startup-window");
   const executable = platform === "darwin" ? "/usr/bin/open" : chrome.executable;
   const launchArgs = platform === "darwin"
     ? ["-g", "-a", chrome.appPath, ...(args.length ? ["--args", ...args] : [])]

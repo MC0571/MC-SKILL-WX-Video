@@ -77,7 +77,7 @@ function response(body, contentType, extraHeaders = {}) {
   });
 }
 
-test('Release preparation leaves legacy extension files untouched and commits only protocol-3 runtime state', {
+test('Release preparation accepts x-gtar MIME, leaves legacy extension files untouched and commits only protocol-3 runtime state', {
   skip: !supportedPlatform,
 }, async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'skill-runtime-transaction-'));
@@ -125,6 +125,7 @@ test('Release preparation leaves legacy extension files untouched and commits on
     const incompatibleSkill = makeRelease('0.3.0', 4);
     const incompatibleSameVersionSkill = makeRelease('0.2.4', 4);
     const legacySkill = makeRelease('0.2.4', 3, false, '22.22.2', 'v0.2.4');
+    legacySkill.release.assets[0].content_type = 'application/x-gtar';
     let releasePages = [
       [newerExtensionRelease, incompatibleSkill.release],
       [incompatibleSameVersionSkill.release, legacySkill.release],
@@ -144,7 +145,7 @@ test('Release preparation leaves legacy extension files untouched and commits on
       if (url === failedDownloadUrl) throw new Error('synthetic network failure');
       for (const fixture of releaseFixtures) {
         if (url === fixture.baseUrl + '/SHA256SUMS') return response(fixture.checksums, 'text/plain');
-        if (url === fixture.baseUrl + '/' + fixture.archiveName) return response(fixture.archive, 'application/gzip');
+        if (url === fixture.baseUrl + '/' + fixture.archiveName) return response(fixture.archive, fixture.release.assets[0].content_type);
       }
       throw new Error('Unexpected runtime test URL: ' + url);
     };
@@ -194,6 +195,7 @@ test('Release preparation leaves legacy extension files untouched and commits on
     }
 
     const badHashRelease = makeRelease('0.4.0', 3, true);
+    badHashRelease.release.assets[0].content_type = 'application/x-gtar';
     releaseFixtures = [badHashRelease, legacySkill];
     releasePages = [[newerExtensionRelease, badHashRelease.release], [legacySkill.release]];
     await assert.rejects(prepare(), /SHA256/);

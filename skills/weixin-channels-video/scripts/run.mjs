@@ -28,6 +28,7 @@ const RELEASES_API = "https://api.github.com/repos/" + OWNER + "/" + REPOSITORY 
 const RELEASE_DOWNLOADS = "https://github.com/" + OWNER + "/" + REPOSITORY + "/releases/download";
 const ARCHIVE_NAME = (version) => REPOSITORY + "-skill-v" + version + ".tar.gz";
 const SKILL_ZIP_NAME = (version) => REPOSITORY + "-skill-v" + version + ".zip";
+const ARCHIVE_CONTENT_TYPES = ["application/gzip", "application/x-gzip", "application/x-gtar", "application/octet-stream"];
 const LEGACY_CACHE_ROOT = platformCacheRoot() ?? join(homedir(), ".cache", REPOSITORY, "skill-runtime");
 const CACHE_ROOT = join(LEGACY_CACHE_ROOT, "protocol-" + RUNTIME_PROTOCOL);
 const SKILL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -297,7 +298,7 @@ function releaseCandidates(releases) {
 
 function releasePackage(release, version) {
   const archive = releaseAsset(release, version, ARCHIVE_NAME(version), MAX_DOWNLOAD_BYTES,
-    ["application/gzip", "application/x-gzip", "application/octet-stream"]);
+    ARCHIVE_CONTENT_TYPES);
   releaseAsset(release, version, SKILL_ZIP_NAME(version), MAX_DOWNLOAD_BYTES,
     ["application/zip", "application/octet-stream"]);
   const checksums = releaseAsset(release, version, "SHA256SUMS", 64 * 1024,
@@ -555,7 +556,7 @@ async function prepareFromRelease() {
       }),
       fetchBytes(releaseBase + "/" + archiveName, {
         expectedSize: archive.size,
-        contentTypes: ["application/gzip", "application/x-gzip", "application/octet-stream"],
+        contentTypes: ARCHIVE_CONTENT_TYPES,
       }),
     ]);
     const expectedHash = checksumFor(sumsBytes.toString("utf8"), archiveName);
