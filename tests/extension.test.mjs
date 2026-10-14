@@ -22,6 +22,13 @@ import {
 import { initializeUpdateUi } from "../extension/update-ui.mjs";
 import { API_URLS } from "../src/core.mjs";
 
+function assertBridgeSnapshot(storage, key, expected) {
+  const state = storage.get(key);
+  const { checkedAt, ...snapshot } = state ?? {};
+  assert.deepEqual(snapshot, expected);
+  assert.ok(Number.isSafeInteger(checkedAt));
+}
+
 function createHiddenIframeHarness() {
   const iframeListeners = new Map();
   const messageListeners = new Set();
@@ -1194,7 +1201,7 @@ test("background reuses one identity for install and startup and requires the ma
     const instanceId = storage.get("weixin-channels-video:instance-id");
     await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId: "523e4567-e89b-42d3-a456-426614174000" });
     for (let attempt = 0; attempt < 20 && storage.get("weixin-channels-video:bridge-connection-state")?.stage !== "failed"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(storage.get("weixin-channels-video:bridge-connection-state"), { version: 1, stage: "failed", reason: "invalid_ready_message" });
+    assertBridgeSnapshot(storage, "weixin-channels-video:bridge-connection-state", { version: 1, stage: "failed", reason: "invalid_ready_message" });
   });
 });
 
@@ -1203,7 +1210,7 @@ test("only a valid legacy ready payload is reported as unsupported protocol", as
   await withBackgroundHarness({}, async ({ ports, storage }) => {
     for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
     await ports[0].onMessage.fire({ type: "ready", version: 1 });
-    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+    assertBridgeSnapshot(storage, stateKey, { version: 1, stage: "failed", reason: "protocol_unsupported" });
     assert.equal(ports[0].disconnects, 1);
   });
 
@@ -1211,7 +1218,7 @@ test("only a valid legacy ready payload is reported as unsupported protocol", as
     for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
     const instanceId = storage.get("weixin-channels-video:instance-id");
     await ports[0].onMessage.fire({ type: "ready", version: 3, instanceId });
-    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "protocol_unsupported" });
+    assertBridgeSnapshot(storage, stateKey, { version: 1, stage: "failed", reason: "protocol_unsupported" });
   });
 
   for (const [ready, expectedReason] of [
@@ -1223,7 +1230,7 @@ test("only a valid legacy ready payload is reported as unsupported protocol", as
     await withBackgroundHarness({}, async ({ ports, storage }) => {
       for (let attempt = 0; attempt < 20 && ports.length === 0; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
       await ports[0].onMessage.fire(ready);
-      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: expectedReason });
+      assertBridgeSnapshot(storage, stateKey, { version: 1, stage: "failed", reason: expectedReason });
     });
   }
 });
@@ -1257,7 +1264,7 @@ test("Native Messaging disconnects store safe Chrome error categories", async ()
       chromeApi.runtime.lastError = { message };
       await ports[0].onDisconnect.fire();
       for (let attempt = 0; attempt < 20 && storage.get(stateKey)?.stage !== "failed"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason });
+      assertBridgeSnapshot(storage, stateKey, { version: 1, stage: "failed", reason });
       assert.equal(JSON.stringify(storage.get(stateKey)).includes("private"), false);
     });
   }
@@ -1271,7 +1278,7 @@ test("host exit remains a host exit after the v2 ready handshake", async () => {
     await ports[0].onMessage.fire({ type: "ready", version: 2, instanceId });
     chromeApi.runtime.lastError = { message: "Native host has exited." };
     await ports[0].onDisconnect.fire();
-    assert.deepEqual(storage.get(stateKey), { version: 1, stage: "failed", reason: "host_exited" });
+    assertBridgeSnapshot(storage, stateKey, { version: 1, stage: "failed", reason: "host_exited" });
   });
 });
 

@@ -3,6 +3,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, win32 } from "node:path";
 import { BRIDGE_ERROR_MESSAGES, SESSION_ID_PATTERN } from "../../../src/native-messaging.mjs";
+import { isIpcSession } from "../../../src/native-ipc.mjs";
 import { windowsPowerShellBuiltinModuleImport, windowsPowerShellPath } from "./windows-security.mjs";
 import { BridgeError, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
 import { inspectBridgeComponents, readBridgeConnections, readBridgeSelection } from "./bridge-install.mjs";
@@ -217,8 +218,15 @@ export async function launchChrome(config, _sessionId, {
   }
 }
 
-function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, platform, candidateAction }) {
+function nextActions({ chrome, profile, extension, bridge, connection, configuration, config, platform, candidateAction, target }) {
   if (connection.state === "connected") return [];
+  if (target) {
+    if (connection.state === "configuration_missing") return ["install_bridge_with_requested_extension"];
+    if (["configuration_invalid", "extension_mismatch", "session_invalid"].includes(connection.state)) {
+      return ["repair_bridge_registration"];
+    }
+    if (connection.state === "protocol_error") return ["inspect_bridge_protocol_compatibility"];
+  }
   if (profile.state === "access_denied" || candidateAction === "open_chrome_extensions") {
     return ["open_chrome_extensions"];
   }
@@ -243,16 +251,20 @@ function nextActions({ chrome, profile, extension, bridge, connection, configura
   else if (bridge.session === "invalid") actions.push("repair_bridge_registration");
   if (configuration === "configured" && !config?.profileDirectory) {
     if (actions.length) return [...new Set(actions)];
+    if (connection.state === "session_unavailable") return ["inspect_bridge_session"];
     if (connection.state === "profile_ambiguous") return ["connect_to_one_chrome_profile"];
     if (connection.state === "selected_offline") return ["restore_selected_chrome_connection"];
     if (connection.state === "protocol_unsupported") return ["update_extension_and_skill"];
+    if (connection.state === "protocol_error") return ["inspect_bridge_protocol_compatibility"];
     if (connection.state === "disconnected") return ["open_chrome_and_enable_extension"];
     return ["inspect_chrome_extension_and_bridge_manually"];
   }
   if (connection.state === "session_mismatch") actions.push("repair_bridge_session_mismatch");
+  else if (connection.state === "session_unavailable" && !actions.length) actions.push("inspect_bridge_session");
   else if (connection.state === "profile_ambiguous") actions.push("connect_to_one_chrome_profile");
   else if (connection.state === "selected_offline") actions.push("restore_selected_chrome_connection");
   else if (connection.state === "protocol_unsupported") actions.push("update_extension_and_skill");
+  else if (connection.state === "protocol_error") actions.push("inspect_bridge_protocol_compatibility");
   else if (["connection_failed", "disconnected", "timeout"].includes(connection.state)) actions.push("restore_connection_before_next_task");
   if (configuration !== "configured" && !actions.length) actions.push("configure_bridge_and_select_profile");
   if (!actions.length) actions.push("inspect_chrome_extension_and_bridge_manually");
@@ -342,7 +354,7 @@ async function inspectCandidate({ profile, extensionId }, {
   };
 }
 
-export async function diagnoseEnvironment({ configuration, config, sessionId, sessionInfo, candidate } = {}, {
+export async function diagnoseEnvironment({ configuration, config, sessionId, sessionInfo, candidate, target } = {}, {
   platform = process.platform,
   env = process.env,
   home = homedir(),
@@ -366,13 +378,26 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
   let bridge = {};
   try { bridge = await inspectBridge(config); } catch { /* Keep unavailable bridge metadata unknown. */ }
   let connection = { state: "unknown" };
-  if (config) {
+  if (target && !config) {
+    connection = configuration === "invalid"
+      ? { state: "configuration_invalid", error: "BRIDGE_CONFIG_INVALID" }
+      : { state: "configuration_missing", error: "BRIDGE_NOT_CONFIGURED" };
+  } else if (target && config.extensionId !== target.extensionId) {
+    connection = { state: "extension_mismatch", error: "BRIDGE_EXTENSION_MISMATCH" };
+  } else if (target && !(sessionInfo ?? sessionId)) {
+    connection = { state: "session_unavailable", error: "BRIDGE_DISCONNECTED" };
+  } else if (target && (sessionInfo ?? sessionId)?.ipcProtocol === 1) {
+    connection = { state: "session_mismatch", error: "BRIDGE_SESSION_MISMATCH" };
+  } else if (target && !isIpcSession(sessionInfo ?? sessionId)) {
+    connection = { state: "session_invalid", error: "BRIDGE_CONFIG_INVALID" };
+  } else if (config) {
     const bridgeSession = sessionInfo ?? sessionId;
     if (bridgeSession?.ipcProtocol === 1) {
       connection = { state: "session_mismatch" };
     } else if (SESSION_ID_PATTERN.test(bridgeSession?.sessionId ?? bridgeSession ?? "")) {
       try {
         const selected = await selectBridgeConnection(config, bridgeSession, {
+          ...(target ? { instanceId: target.instanceId } : {}),
           readConnections,
           readSelection,
           request: bridgeRequest,
@@ -391,17 +416,19 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
           connection = { state: "disconnected" };
         }
       } catch (error) {
-        const code = error instanceof BridgeError ? error.code : "";
+        const code = Object.hasOwn(BRIDGE_ERROR_MESSAGES, error?.code) ? error.code : "";
         connection = { state: code === "BRIDGE_SESSION_MISMATCH" ? "session_mismatch"
           : code === "BRIDGE_PROFILE_AMBIGUOUS" ? "profile_ambiguous"
             : code === "BRIDGE_PROTOCOL_UNSUPPORTED" ? "protocol_unsupported"
+              : code === "BRIDGE_PROTOCOL_ERROR" ? "protocol_error"
+                : code === "BRIDGE_CONFIG_INVALID" ? "configuration_invalid"
               : code === "BRIDGE_TIMEOUT" ? "timeout"
                 : code === "BRIDGE_CONNECTION_FAILED" ? "connection_failed"
                   : code === "BRIDGE_DISCONNECTED" ? "disconnected"
-                    : "unknown" };
+                    : "unknown", ...(code && (target || code === "BRIDGE_PROTOCOL_ERROR") ? { error: code } : {}) };
       }
     }
-    if (connection.state === "connected") {
+    if (connection.state === "connected" || target) {
       profile = { state: "unknown", extension: "unknown" };
     } else {
       try {
@@ -437,6 +464,7 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
     bridge: safeBridge,
     connection,
   };
+  if (target) result.target = { instanceId: target.instanceId, extensionId: target.extensionId };
   if (candidate) {
     result.candidate = await inspectCandidate(candidate, {
       platform,
@@ -461,6 +489,7 @@ export async function diagnoseEnvironment({ configuration, config, sessionId, se
     config,
     platform,
     candidateAction: result.candidate?.nextAction,
+    target,
   });
   result.nextAction = result.actions[0];
   return result;
