@@ -7,7 +7,6 @@
 | `icons/agents/codex.png` | OpenAI 官方 Codex 桌面应用的 `icon-codex-light.png`，产品入口：[openai.com/codex](https://openai.com/codex/) |
 | `icons/agents/claude.svg` | [Simple Icons 的 Claude 标识](https://github.com/simple-icons/simple-icons/blob/develop/icons/claude.svg)，CC0；陶土橙底白色标识 |
 | `icons/agents/chatgpt.svg`、`icons/github.svg` | [Simple Icons](https://github.com/simple-icons/simple-icons)，CC0 |
-| `icons/wechat-channels.png` | [微信视频号助手](https://channels.weixin.qq.com/)声明的[原生图标](https://res.wx.qq.com/t/wx_fed/finder/helper/finder-helper-web/res/favicon-v2.ico)，保留原始图片 |
 | `icons/agents/workbuddy.svg` | [WorkBuddy 官网](https://www.workbuddy.cn/work)声明的 [图标](https://download.codebuddy.cn/web/workbuddy/c19ed986882bfc731d1c6a26a97eacaa9ee55ed8/assets/logo.svg) |
 | `icons/agents/doubao-work.png` | [豆包工作官网](https://www.doubao.com/work)声明的 [图标](https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/doubaowork-logo-f.png) |
 | `icons/agents/qwen-work.png` | [千问办公 / QwenWork 官网](https://qwenwork.cn/)声明的 [图标](https://img.alicdn.com/imgextra/i3/O1CN01sMKDxc1tfzpFpRuzW_!!6000000005930-2-tps-48-48.png) |

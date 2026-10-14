@@ -508,6 +508,17 @@ test("diagnosis shares live instance selection and reports ambiguity, offline se
   });
   assert.equal(currentUnprofiled.connection.state, "connected");
   assert.deepEqual(currentUnprofiled.actions, []);
+
+  const protocolError = await diagnoseEnvironment(base, {
+    ...dependencies,
+    readSelection: async () => first,
+    readConnections: async () => [{ instanceId: first, nativeProtocol: 2 }],
+    bridgeRequest: async () => { throw new BridgeError("BRIDGE_PROTOCOL_ERROR", "private response detail"); },
+  });
+  assert.equal(protocolError.connection.state, "protocol_error");
+  assert.equal(protocolError.connection.error, "BRIDGE_PROTOCOL_ERROR");
+  assert.equal(protocolError.nextAction, "inspect_bridge_protocol_compatibility");
+  assert.equal(JSON.stringify(protocolError).includes("private response detail"), false);
 });
 
 test("macOS diagnosis tolerates unknown Windows-only security without obsolete pairing advice", { skip: process.platform !== "darwin" }, async () => {
@@ -679,6 +690,138 @@ test("candidate diagnose CLI validates the pair and does not read installed conf
   assert.deepEqual(JSON.parse(output[0]), { candidate: { nextAction: "install_bridge_with_selected_profile" } });
 
   assert.equal(await runCli(["diagnose", "--profile", "Profile 2"], { stderr: () => {} }), 2);
+});
+
+test("instance diagnose validates and forwards one explicit identity", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  let configurationReads = 0;
+  const invalidArguments = [
+    ["diagnose", "--instance", instanceId],
+    ["diagnose", "--extension-id", EXTENSION_ID],
+    ["diagnose", "--instance", "not-a-uuid", "--extension-id", EXTENSION_ID],
+    ["diagnose", "--instance", instanceId, "--extension-id", "invalid"],
+    ["diagnose", "--profile", "Default", "--instance", instanceId, "--extension-id", EXTENSION_ID],
+  ];
+  for (const args of invalidArguments) {
+    assert.equal(await runCli(args, {
+      stderr: () => {},
+      readInstallation: async () => { configurationReads += 1; return null; },
+    }), 2);
+  }
+  assert.equal(configurationReads, 0);
+
+  const output = [];
+  let request;
+  const config = { extensionId: EXTENSION_ID };
+  const sessionInfo = { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET };
+  assert.equal(await runCli(["diagnose", "--instance", instanceId, "--extension-id", EXTENSION_ID], {
+    stdout: (value) => output.push(value),
+    readInstallation: async () => config,
+    readSession: async () => sessionInfo,
+    diagnose: async (value) => { request = value; return { target: value.target }; },
+  }), 0);
+  assert.deepEqual(request, {
+    configuration: "configured",
+    config,
+    sessionInfo,
+    target: { instanceId, extensionId: EXTENSION_ID },
+  });
+  assert.deepEqual(JSON.parse(output[0]), { target: { instanceId, extensionId: EXTENSION_ID } });
+});
+
+test("instance diagnosis preserves its identity when setup is unavailable and skips profile metadata", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const otherInstanceId = "523e4567-e89b-42d3-a456-426614174000";
+  const sessionInfo = { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET };
+  const cases = [
+    [{ configuration: "unconfigured" }, "configuration_missing", "install_bridge_with_requested_extension"],
+    [{ configuration: "invalid" }, "configuration_invalid", "repair_bridge_registration"],
+    [{ configuration: "configured", config: { extensionId: OTHER_EXTENSION_ID }, sessionInfo }, "extension_mismatch", "repair_bridge_registration"],
+    [{ configuration: "configured", config: { extensionId: EXTENSION_ID } }, "session_unavailable", "inspect_bridge_session"],
+    [{ configuration: "configured", config: { extensionId: EXTENSION_ID }, sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2 } }, "session_invalid", "repair_bridge_registration"],
+  ];
+  for (const [request, state, nextAction] of cases) {
+    let reads = 0;
+    const target = { instanceId, extensionId: EXTENSION_ID };
+    const result = await diagnoseEnvironment({ ...request, target }, {
+      inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+      inspectBridge: async () => ({}),
+      readSelection: async () => { reads += 1; return otherInstanceId; },
+      readConnections: async () => { reads += 1; return []; },
+      inspectProfile: async () => { reads += 1; return { state: "exists", extension: "enabled" }; },
+    });
+    assert.deepEqual(result.target, target);
+    assert.equal(result.connection.state, state);
+    assert.equal(result.nextAction, nextAction);
+    assert.equal(reads, 0);
+  }
+});
+
+test("unavailable targeted session needs evidence before repair", async () => {
+  const request = {
+    configuration: "configured", config: { extensionId: EXTENSION_ID },
+    target: { instanceId: "423e4567-e89b-42d3-a456-426614174000", extensionId: EXTENSION_ID },
+  };
+  const result = await diagnoseEnvironment(request, {
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({ session: "missing" }),
+  });
+  assert.equal(result.connection.state, "session_unavailable");
+  assert.equal(result.nextAction, "repair_bridge_registration");
+});
+
+test("offline explicit target never probes another online instance", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const result = await diagnoseEnvironment({
+    configuration: "configured", config: { extensionId: EXTENSION_ID },
+    sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+    target: { instanceId, extensionId: EXTENSION_ID },
+  }, {
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({}),
+    readSelection: async () => { assert.fail("must not read a different selection"); },
+    readConnections: async () => [{ instanceId: "523e4567-e89b-42d3-a456-426614174000", nativeProtocol: 2 }],
+    bridgeRequest: async () => { assert.fail("must not probe another instance"); },
+    inspectProfile: async () => { assert.fail("must not read another profile"); },
+  });
+  assert.deepEqual(result.connection, { state: "selected_offline", instanceId });
+  assert.equal(result.nextAction, "restore_selected_chrome_connection");
+});
+
+test("instance diagnosis probes only its target and reports protocol errors without leaking details", async () => {
+  const instanceId = "423e4567-e89b-42d3-a456-426614174000";
+  const otherInstanceId = "523e4567-e89b-42d3-a456-426614174000";
+  const target = { instanceId, extensionId: EXTENSION_ID };
+  const requestInstances = [];
+  let selectionReads = 0;
+  let profileReads = 0;
+  const result = await diagnoseEnvironment({
+    configuration: "configured",
+    config: { extensionId: EXTENSION_ID },
+    sessionInfo: { sessionId: SESSION_ID, ipcProtocol: 2, ipcSecret: IPC_SECRET },
+    target,
+  }, {
+    inspectChrome: () => ({ installation: "installed", compatibility: "supported" }),
+    inspectBridge: async () => ({}),
+    readSelection: async () => { selectionReads += 1; return otherInstanceId; },
+    readConnections: async () => [
+      { instanceId: otherInstanceId, nativeProtocol: 2 },
+      { instanceId, nativeProtocol: 2 },
+    ],
+    bridgeRequest: async (_config, _sessionInfo, _request, options) => {
+      requestInstances.push(options.instanceId);
+      throw new BridgeError("BRIDGE_PROTOCOL_ERROR", "private response detail");
+    },
+    inspectProfile: async () => { profileReads += 1; return { state: "exists", extension: "enabled" }; },
+  });
+  assert.deepEqual(result.target, target);
+  assert.equal(result.connection.state, "protocol_error");
+  assert.equal(result.connection.error, "BRIDGE_PROTOCOL_ERROR");
+  assert.equal(result.nextAction, "inspect_bridge_protocol_compatibility");
+  assert.deepEqual(requestInstances, [instanceId]);
+  assert.equal(selectionReads, 0);
+  assert.equal(profileReads, 0);
+  assert.equal(JSON.stringify(result).includes("private response detail"), false);
 });
 
 test("install-bridge accepts manual pairing and pairing-info emits only the session identifier", async () => {

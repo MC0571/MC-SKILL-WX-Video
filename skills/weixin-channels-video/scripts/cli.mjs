@@ -8,8 +8,9 @@ import { BridgeSetupError, installBridge, listBridgeProfiles, readBridgeConnecti
 import { BridgeError, discoverBridgeConnections, requestBridge, selectBridgeConnection, waitForBridge } from "./bridge-client.mjs";
 import { diagnoseEnvironment, inspectChromeRunning, launchChrome } from "./diagnostics.mjs";
 
-const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID] | connections | status | connect [--instance UUID] [--extension-id ID] | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
+const USAGE = "Usage: cli.mjs list-profiles | install-bridge --extension-id ID [--profile NAME] | pairing-info | diagnose [--profile NAME --extension-id ID | --instance UUID --extension-id ID] | connections | status | connect [--instance UUID] [--extension-id ID] | parse --url URL | download --url URL [--filename RELATIVE.mp4]";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ERROR_MESSAGES = Object.freeze({ ...PARSE_ERROR_MESSAGES, ...BRIDGE_ERROR_MESSAGES });
 const CLI_VERSION = typeof __WCV_VERSION__ === "string" ? __WCV_VERSION__ : "unknown";
 const BRIDGE_WAIT_MS = 90_000;
@@ -25,7 +26,7 @@ function parseArguments(command, args) {
     "list-profiles": [],
     "install-bridge": ["extension-id", "profile"],
     "pairing-info": [],
-    diagnose: ["profile", "extension-id"],
+    diagnose: ["profile", "instance", "extension-id"],
     connections: [],
     status: [],
     connect: ["instance", "extension-id"],
@@ -46,9 +47,12 @@ function parseArguments(command, args) {
     index += 1;
   }
   if (command === "install-bridge" && !options["extension-id"]) throw new Error("USAGE");
-  if (command === "diagnose" && Boolean(options.profile) !== Boolean(options["extension-id"])) throw new Error("USAGE");
+  if (command === "diagnose" && (
+    (options.profile !== undefined && options.instance !== undefined) ||
+    Boolean(options["extension-id"]) !== Boolean(options.profile || options.instance)
+  )) throw new Error("USAGE");
   if (command === "diagnose" && options["extension-id"] && !EXTENSION_ID_PATTERN.test(options["extension-id"])) throw new Error("USAGE");
-  if (command === "connect" && options.instance && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.instance)) throw new Error("USAGE");
+  if (["connect", "diagnose"].includes(command) && options.instance && !INSTANCE_ID_PATTERN.test(options.instance)) throw new Error("USAGE");
   if (command === "connect" && options["extension-id"] && !EXTENSION_ID_PATTERN.test(options["extension-id"])) throw new Error("USAGE");
   if (["parse", "download"].includes(command) && !options.url) throw new Error("USAGE");
   if (options.filename && !isSafeRelativeMp4Filename(options.filename)) throw new Error("INVALID_FILENAME");
@@ -192,6 +196,9 @@ export async function runCli(argv, {
         stdout(JSON.stringify(result));
         return 0;
       }
+      const target = options.instance
+        ? { instanceId: options.instance, extensionId: options["extension-id"] }
+        : undefined;
       let config;
       let configuration = "unconfigured";
       try {
@@ -201,11 +208,11 @@ export async function runCli(argv, {
         configuration = "invalid";
       }
       let sessionInfo;
-      if (config) {
+      if (config && (!target || config.extensionId === target.extensionId)) {
         try { sessionInfo = await readSession(config); }
         catch { sessionInfo = null; }
       }
-      const result = await diagnose({ configuration, config, sessionInfo }, {
+      const result = await diagnose({ configuration, config, sessionInfo, ...(target ? { target } : {}) }, {
         waitForLegacyBridge,
         readConnections,
         readSelection,

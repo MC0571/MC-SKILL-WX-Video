@@ -120,6 +120,62 @@ test("login and bridge snapshots control login entry, connection light, and diag
   assert.equal(controls.get("#agent-connection-tooltip").textContent, "复制提示词让你的 Agent 来代劳吧");
 });
 
+test("copied prompt reflects each bridge stage and keeps login state independent", async () => {
+  const instanceId = "123e4567-e89b-42d3-a456-426614174000";
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const cases = [
+    {
+      bridge: { version: 1, stage: "host_ready", checkedAt: 100 },
+      login: { login: "authenticated", checkedAt: 200 },
+      stage: /桥接 stage：ready（host_ready）/,
+      action: /真实往返核验[\s\S]*scripts\/run\.mjs connect --instance/,
+      loginStatus: /元宝 login：authenticated/,
+    },
+    {
+      bridge: { version: 1, stage: "host_starting", checkedAt: 300 },
+      login: { login: "anonymous", checkedAt: 400 },
+      stage: /桥接 stage：connecting（host_starting）/,
+      action: /总等待上限 90 秒/,
+      loginStatus: /元宝 login：anonymous/,
+    },
+    {
+      bridge: { version: 1, stage: "failed", reason: "host_not_found", checkedAt: 500 },
+      login: { login: "failed", checkedAt: 600, error: "LOGIN_CHECK_FAILED" },
+      stage: /桥接 stage：failed（failed）/,
+      action: /类别为 host_not_found[\s\S]*scripts\/run\.mjs diagnose --instance/,
+      loginStatus: /元宝 login：check_failed/,
+    },
+    {
+      bridge: undefined,
+      login: { login: "not_checked", checkedAt: null },
+      stage: /桥接 stage：unknown/,
+      action: /连接状态未知[\s\S]*scripts\/run\.mjs connect --instance/,
+      loginStatus: /元宝 login：not_checked/,
+    },
+  ];
+
+  for (const { bridge, login, stage, action, loginStatus } of cases) {
+    const stored = {
+      [INSTANCE_STORAGE_KEY]: instanceId,
+      [LOGIN_STORAGE_KEY]: login,
+      ...(bridge ? { [CONNECTION_STORAGE_KEY]: bridge } : {}),
+    };
+    const { controls } = setup({ stored, extensionId, version: "2.4.6" });
+    await new Promise((resolve) => setImmediate(resolve));
+    const prompt = controls.get("#ai-download-prompt-text").value;
+    assert.match(prompt, /本机扩展版本：2\.4\.6/);
+    assert.match(prompt, /Native Messaging host \/ Skill CLI 版本：未知/);
+    assert.match(prompt, stage);
+    assert.match(prompt, action);
+    assert.match(prompt, loginStatus);
+    assert.match(prompt, /connect 成功后(?:才)?读取一次 status/);
+    assert.match(prompt, /始终使用上述扩展 ID 和实例 UUID/);
+    assert.match(prompt, /不自动重发/);
+    if (bridge?.checkedAt) assert.match(prompt, new RegExp(`桥接 checkedAt：${bridge.checkedAt}`));
+    if (login.checkedAt) assert.match(prompt, new RegExp(`元宝 checkedAt：${login.checkedAt}`));
+  }
+});
+
 test("connection light distinguishes unknown and starting states and rejects stale initial snapshots", async () => {
   let resolveRead;
   const read = new Promise((resolve) => { resolveRead = resolve; });
@@ -161,12 +217,15 @@ test("prompt copy reports success briefly, resets on repeated clicks, and select
   const button = controls.get("#ai-download-prompt-copy");
   const openButton = controls.get("#ai-download-prompt-open");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(controls.get("#ai-download-prompt-text").value, /扩展已安装/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /身份和扩展状态快照如下/);
   assert.match(controls.get("#ai-download-prompt-text").value, /当前扩展 ID：abcdefghijklmnopabcdefghijklmnop/);
   assert.match(controls.get("#ai-download-prompt-text").value, /当前扩展实例 UUID：123e4567-e89b-42d3-a456-426614174000/);
-  assert.match(controls.get("#ai-download-prompt-text").value, /按 Skill 指引使用上述身份/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /本机扩展版本：9\.8\.7/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /Native Messaging host \/ Skill CLI 版本：未知/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /桥接 stage：unknown/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /元宝 login：not_checked/);
   assert.match(controls.get("#ai-download-prompt-text").value, /安装指引/);
-  assert.match(controls.get("#ai-download-prompt-text").value, /真实通信往返成功/);
+  assert.match(controls.get("#ai-download-prompt-text").value, /真实通信往返为准/);
   assert.doesNotMatch(controls.get("#ai-download-prompt-text").value, /\breference\b|\bprofile\b|配对码|pairing-info|不运行登录检查/);
   assert.match(controls.get("#ai-download-prompt-text").value, /Chrome 用户/);
   popover.dispatch("toggle", { newState: "open" });
@@ -354,6 +413,66 @@ test("a newer storage change wins over a delayed identity read", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(controls.get("#ai-download-prompt-text").value, /523e4567-e89b-42d3-a456-426614174004/);
   assert.doesNotMatch(controls.get("#ai-download-prompt-text").value, /623e4567-e89b-42d3-a456-426614174005/);
+});
+
+test("a newer bridge snapshot wins over delayed storage reads and is copied", async () => {
+  const stale = { version: 1, stage: "host_starting", checkedAt: 10 };
+  const current = { version: 1, stage: "host_ready", checkedAt: 20 };
+  const pendingReads = [];
+  const written = [];
+  const { controls, changes } = setup({
+    stored: {
+      [INSTANCE_STORAGE_KEY]: "123e4567-e89b-42d3-a456-426614174000",
+      [CONNECTION_STORAGE_KEY]: stale,
+      [LOGIN_STORAGE_KEY]: { login: "anonymous", checkedAt: 11 },
+    },
+    read: (key) => key === CONNECTION_STORAGE_KEY
+      ? new Promise((resolve) => pendingReads.push(resolve))
+      : Promise.resolve({
+        [INSTANCE_STORAGE_KEY]: "123e4567-e89b-42d3-a456-426614174000",
+        [LOGIN_STORAGE_KEY]: { login: "anonymous", checkedAt: 11 },
+      }),
+    writeText: async (value) => written.push(value),
+  });
+  await Promise.resolve();
+  assert.equal(pendingReads.length, 2);
+  changes.forEach((listener) => listener({ [CONNECTION_STORAGE_KEY]: { newValue: current } }, "local"));
+  pendingReads.forEach((resolve) => resolve({ [CONNECTION_STORAGE_KEY]: stale }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const prompt = controls.get("#ai-download-prompt-text");
+  assert.match(prompt.value, /桥接 stage：ready（host_ready）/);
+  assert.match(prompt.value, /桥接 checkedAt：20/);
+  assert.doesNotMatch(prompt.value, /桥接 checkedAt：10/);
+  await controls.get("#ai-download-prompt-copy").dispatch("click");
+  assert.equal(written[0], prompt.value);
+  assert.match(written[0], /桥接 checkedAt：20/);
+});
+
+test("status refresh preserves pending copy feedback and updates the next copy", async () => {
+  let resolveCopy;
+  const written = [];
+  const { controls, changes } = setup({
+    reducedMotion: true,
+    writeText: (text) => {
+      written.push(text);
+      return written.length === 1 ? new Promise((resolve) => { resolveCopy = resolve; }) : Promise.resolve();
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const button = controls.get("#ai-download-prompt-copy");
+  const copy = button.dispatch("click");
+  changes.forEach((listener) => listener({
+    [CONNECTION_STORAGE_KEY]: { newValue: { version: 1, stage: "host_ready", checkedAt: 20 } },
+    [LOGIN_STORAGE_KEY]: { newValue: { login: "authenticated", checkedAt: 30 } },
+  }, "local"));
+  resolveCopy();
+  await copy;
+  assert.equal(button.dataset.copied, "true");
+  assert.match(written[0], /桥接 stage：unknown/);
+  await button.dispatch("click");
+  assert.match(written[1], /桥接 stage：ready/);
+  assert.match(written[1], /元宝 checkedAt：30/);
 });
 
 test("an identity change invalidates a pending clipboard result", async () => {

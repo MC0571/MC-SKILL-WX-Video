@@ -422,6 +422,7 @@ function setNativeConnectionState(stage, reason) {
   const state = {
     version: 1,
     stage,
+    checkedAt: Date.now(),
     ...(reason ? { reason } : {}),
   };
   nativeConnectionStateQueue = nativeConnectionStateQueue.then(() =>
