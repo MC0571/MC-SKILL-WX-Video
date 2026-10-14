@@ -45,7 +45,7 @@ node <skill-root>/scripts/run.mjs connections
 
 开始解析或下载前，读取实例保存的登录 snapshot。快照含 `login`、`checkedAt`（Unix epoch 毫秒或 `null`）及可选错误类别；状态为 `authenticated`、`anonymous`、`failed` 或 `not_checked`。扩展以单一五分钟 heartbeat 更新快照，并在页面打开时强制刷新。查询登录状态或准备新任务时，仅在 snapshot 未知或过期时请求刷新，已有新鲜 snapshot 会复用。扩展响应本身证明桥接往返，不依赖元宝请求成功。明确 `anonymous` 时停止解析/下载并请用户登录；`failed` 表示登录检查失败，不能当作未登录，也不表示桥接连接失败。解析请求收到 `AUTH_EXPIRED` 时，扩展同步将 snapshot 标为匿名。
 
-每次 `connect` 的总等待上限为 90 秒。`running` 时复用 Chrome 并等待扩展后台恢复；只有 Chrome 明确为 `not_running`、且桥接登记了用户确认的 profile 时，才后台启动一次该 Chrome 用户，不附带 URL。macOS 使用 `open -g`；Windows 使用 `--no-startup-window` 启动正常 Chrome，不使用 headless 或远程调试。若目标 profile 未确认或进程状态为 `unknown`，请用户手动打开所选 Chrome 用户后再继续；不得猜测目标、反复启动 Chrome 或循环重试。Windows 实机前台焦点行为尚未验证。
+每次 `connect` 的总等待上限为 90 秒。`running` 时复用 Chrome 并等待扩展后台恢复；只有 Chrome 明确为 `not_running`、且桥接登记了用户确认的 profile 时，才后台启动一次该 Chrome 用户，不附带 URL。macOS 使用 `open -g` 并传入 Chrome 的 `--no-startup-window`；Windows 也使用 `--no-startup-window`。该参数抑制启动窗口，仍加载 profile 并允许扩展后台初始化；不使用 headless 或远程调试。若目标 profile 未确认或进程状态为 `unknown`，请用户手动打开所选 Chrome 用户后再继续；不得猜测目标、反复启动 Chrome 或循环重试。Windows 前台焦点行为尚未通过实机验收。
 
 ### 连接失败的诊断与修复
 
