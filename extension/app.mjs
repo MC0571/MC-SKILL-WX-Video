@@ -1,4 +1,4 @@
-import { API_URLS, ParseError } from "../src/core.mjs";
+import { API_URLS, ParseError, validateShareUrl } from "../src/core.mjs";
 import { isSafeRelativeMp4Filename, safeDownloadFilename } from "../src/download-filename.mjs";
 import { initializeEngagementUi } from "./engagement.mjs";
 import { initializeDownloadHistoryUi } from "./history-ui.mjs";
@@ -259,6 +259,32 @@ export async function waitForDownload(downloadId, chromeApi = globalThis.chrome,
   });
 }
 
+export const SHARE_DRAFT_KEY = "weixin-channels-video:share-draft";
+
+export async function initializeShareDraft(input, storage, onError) {
+  let edited = false;
+  const safeDraft = (value) => {
+    try {
+      const url = validateShareUrl(value);
+      return url.search ? "" : value;
+    } catch (error) {
+      if (error instanceof ParseError) return "";
+      throw error;
+    }
+  };
+  input.addEventListener("input", () => {
+    edited = true;
+    const value = safeDraft(input.value);
+    void storage.set({ [SHARE_DRAFT_KEY]: value }).catch(onError);
+  });
+  try {
+    const stored = await storage.get(SHARE_DRAFT_KEY);
+    if (!edited && !input.value) input.value = safeDraft(stored[SHARE_DRAFT_KEY]);
+  } catch (error) {
+    onError(error);
+  }
+}
+
 function initializePage() {
   initializeEngagementUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
   initializeDownloadHistoryUi({ chromeApi: chrome, documentApi: document, windowApi: globalThis });
@@ -285,6 +311,10 @@ function initializePage() {
     parseStatus.textContent = message;
     parseStatus.dataset.error = String(isError);
   };
+
+  void initializeShareDraft(input, chrome.storage.local, () => {
+    setParseStatus("无法保存或恢复分享链接草稿。", true);
+  });
 
   input.addEventListener("input", () => {
     if (!inputInvalid) return;

@@ -21,7 +21,7 @@
 - **商店安装（默认）**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。商店版本可能晚于 GitHub Release；以 Chrome 当前安装版本和实际界面为准。
 - **非商店安装（需明确选择）**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip`，并按同一 Release 的 `SHA256SUMS` 核验；也可按[构建说明](docs/architecture.md#构建与发布)从源码构建。将 ZIP 解压到会持续保留的位置，再在 `chrome://extensions` 启用开发者模式并加载该目录。不要把扩展放进 Skill 缓存；移动目录可能改变扩展 ID。开发者模式只用于此非商店安装方式。
 
-安装后，在同一 Chrome 用户中登录腾讯元宝，即可粘贴分享链接、预览视频并下载。详细操作、下载记录、更新提示和 Agent 设置见[扩展使用说明](docs/extension.md)。
+安装后，在同一 Chrome 用户中登录腾讯元宝，即可粘贴分享链接、预览视频并下载。分享链接草稿保存在当前用户的扩展本地存储中，清空输入框即可清除。详细操作、下载记录、更新提示和 Agent 设置见[扩展使用说明](docs/extension.md)。
 
 ## Agent Skill
 

@@ -33,7 +33,7 @@ async function withTempDir(callback) {
 }
 
 async function withShortTempDir(callback) {
-  const root = await mkdtemp("/tmp/wcv-");
+  const root = await mkdtemp(join(tmpdir(), "wcv-"));
   try { await callback(root); }
   finally { await rm(root, { recursive: true, force: true }); }
 }

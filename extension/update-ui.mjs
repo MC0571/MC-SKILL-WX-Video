@@ -41,12 +41,20 @@ export function initializeUpdateUi({ documentApi = globalThis.document, chromeAp
   const container = anchor.parentNode;
   if (!container) return;
   container.insertBefore(card, anchor === header ? anchor.nextSibling : anchor);
-  let dismissedReleaseVersion = null;
-  let renderedReleaseVersion = null;
+  const dismissedNotices = new Set();
+  let renderedNoticeKey = null;
 
   async function request(messageValue) {
     try { return await chromeApi.runtime.sendMessage(messageValue); }
     catch { return null; }
+  }
+
+  function showDismissibleNotice(key) {
+    renderedNoticeKey = key;
+    if (dismissedNotices.has(key)) return false;
+    dismissButton.hidden = false;
+    card.hidden = false;
+    return true;
   }
 
   function render(state) {
@@ -56,13 +64,13 @@ export function initializeUpdateUi({ documentApi = globalThis.document, chromeAp
     actions.hidden = true;
     dismissButton.hidden = true;
     if (state.updated?.version) {
+      if (!showDismissibleNotice(`updated:${state.updated.version}`)) return;
       message.textContent = `扩展已更新到 v${state.updated.version}。`;
       if (state.updated.changelogUrl) {
         link.href = state.updated.changelogUrl;
         link.textContent = "查看更新说明";
         link.hidden = false;
       }
-      card.hidden = false;
       void request({ type: UPDATE_ACTION_TYPE, action: "acknowledge-updated" });
       return;
     }
@@ -79,16 +87,20 @@ export function initializeUpdateUi({ documentApi = globalThis.document, chromeAp
       card.hidden = false;
       return;
     }
+    if (state.source === "unknown" || (state.source === "external" && state.releaseStatus === "unknown")) {
+      message.textContent = state.source === "unknown"
+        ? "暂时无法确认扩展安装来源，无法检查更新。"
+        : "暂时无法检查扩展更新，请稍后再试。";
+      showDismissibleNotice(`unknown:${state.source}`);
+      return;
+    }
     if (state.source === "external" && state.releaseUrl) {
       if (state.releaseStatus !== "available" || !state.releaseVersion ||
-          dismissedReleaseVersion === state.releaseVersion) return;
-      renderedReleaseVersion = state.releaseVersion;
+          !showDismissibleNotice(`release:${state.releaseVersion}`)) return;
       message.textContent = `扩展有新版 v${state.releaseVersion}。请按原安装方式更新。`;
       link.href = state.releaseChangelogUrl ?? state.releaseUrl;
       link.textContent = "查看新版";
       link.hidden = false;
-      dismissButton.hidden = false;
-      card.hidden = false;
     }
   }
 
@@ -105,7 +117,7 @@ export function initializeUpdateUi({ documentApi = globalThis.document, chromeAp
     card.hidden = true;
   });
   dismissButton.addEventListener("click", () => {
-    dismissedReleaseVersion = renderedReleaseVersion;
+    dismissedNotices.add(renderedNoticeKey);
     card.hidden = true;
   });
 }

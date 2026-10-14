@@ -69,7 +69,7 @@ export async function checkLogin(request) {
   };
 }
 
-function validateShareUrl(value) {
+export function validateShareUrl(value) {
   if (typeof value !== "string" || !value.trim()) fail("INVALID_URL");
 
   let url;
