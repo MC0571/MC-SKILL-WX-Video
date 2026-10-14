@@ -1036,7 +1036,7 @@ test("store update notifies an already open page after persisting update state",
   await manager.updateAvailable("0.2.5");
   await new Promise(setImmediate);
   assert.equal(version.hidden, true);
-  assert.equal(flag.textContent, "NEW");
+  assert.equal(flag.children[0].children[1].src, "./icons/new.gif");
   assert.equal(flag.hidden, false);
   assert.equal(flag.href, `https://chromewebstore.google.com/detail/${STORE_EXTENSION_ID}`);
   assert.equal(shell.children.length, 2, "no update card is added");
@@ -1116,7 +1116,11 @@ test("external NEW replaces the version with a direct ZIP download", async () =>
   assert.equal(version.hidden, true);
   assert.equal(flag.hidden, false);
   assert.equal(flag.tagName, "a");
-  assert.equal(flag.textContent, "NEW");
+  const picture = flag.children[0];
+  assert.equal(picture.tagName, "picture");
+  assert.equal(picture.children[0].media, "(prefers-reduced-motion: reduce)");
+  assert.equal(picture.children[0].srcset, "./icons/new-static.png");
+  assert.equal(picture.children[1].src, "./icons/new.gif");
   assert.equal(flag.href, state.releaseDownloadUrl);
   assert.equal(flag.target, "_self", "the download does not open a GitHub page in another tab");
   assert.match(flag.attributes.get("aria-label"), /下载扩展 v0\.2\.5 ZIP 安装包/);

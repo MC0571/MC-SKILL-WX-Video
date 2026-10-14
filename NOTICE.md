@@ -16,4 +16,6 @@
 
 ## UI 组件
 
+更新提示的 `icons/new.gif` 来自 Google [Noto Animated Emoji](https://googlefonts.github.io/noto-emoji-files/) 的 [NEW 动画](https://fonts.gstatic.com/s/e/notoemoji/latest/1f195/512.gif)，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。动态图未修改；`icons/new-static.png` 从该动画首帧转换，用于减少动态效果的系统设置。扩展包内 `icons/Noto-Emoji-LICENSE.txt` 保留完整许可。
+
 下载记录的日期筛选和排序使用 [Shoelace](https://shoelace.style/) 2.20.1，采用 MIT 许可。本地构建包含组件及其依赖，不从 CDN 加载。扩展构建目录中的 `THIRD_PARTY_LICENSES.txt` 保留所用第三方包的完整版权与许可声明。

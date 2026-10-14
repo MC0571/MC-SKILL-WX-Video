@@ -9,8 +9,18 @@ export function initializeUpdateUi({ documentApi = globalThis.document, chromeAp
   if (!version?.parentNode || !chromeApi?.runtime?.sendMessage) return;
 
   const flag = documentApi.createElement("a");
-  flag.className = "product-version product-new";
-  flag.textContent = "NEW";
+  flag.className = "product-new";
+  const picture = documentApi.createElement("picture");
+  const still = documentApi.createElement("source");
+  still.media = "(prefers-reduced-motion: reduce)";
+  still.srcset = "./icons/new-static.png";
+  const image = documentApi.createElement("img");
+  image.src = "./icons/new.gif";
+  image.alt = "";
+  image.width = 32;
+  image.height = 32;
+  picture.append(still, image);
+  flag.append(picture);
   flag.hidden = true;
   version.parentNode.append(flag);
 
