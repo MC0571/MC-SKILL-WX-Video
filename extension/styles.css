@@ -100,7 +100,29 @@ h1 {
 }
 
 .page-title-row h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 0;
+}
+
+.product-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 24px;
+  padding: 2px 5px;
+  border: 0;
+  background: var(--green);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.product-new:hover {
+  background: var(--green-dark);
 }
 
 .product-mark {
@@ -122,12 +144,6 @@ h2 {
   margin-bottom: 0;
   font-size: 17px;
   letter-spacing: -.01em;
-}
-
-.update-card a {
-  color: #353934;
-  font-weight: 650;
-  text-underline-offset: 3px;
 }
 
 .card {
