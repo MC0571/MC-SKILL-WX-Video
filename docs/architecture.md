@@ -129,11 +129,11 @@ npm run release:package
 - `weixin-channels-video-skill-v<版本>.zip`
 - `SHA256SUMS`
 
-扩展 manifest 更新会触发扩展 Release 和 Chrome Web Store 流程；Skill 版本文件更新会单独打包并发布 Skill Release，不触发商店流程。Release 资产不可覆盖。扩展 Release 工作流可手动重试已有提交的商店送审；商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。GitHub 发布或送审不代表商店已经更新，实际商店版本以 Chrome 安装与桥接报告为准。
+扩展 manifest 更新会触发扩展 GitHub Release，默认不送审；手动运行扩展 Release 时也默认不送审。只有在 main 手动启用 `submit_to_store`，GitHub Release 创建或校验成功后才获取 Google 令牌、上传并向 Chrome Web Store 送审。Skill 版本文件更新会单独打包并发布 Skill Release，不触发商店流程。Release 资产不可覆盖。商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。GitHub 发布或送审不代表商店已经更新，实际商店版本以 Chrome 安装与桥接报告为准。
 
-已有扩展 GitHub Release、商店提交因前一版本审核或校验失败而中止时，在 main 手动运行扩展 Release 并启用 `submit_existing_release`。该模式使用当前 manifest 版本，要求正式 `extension-v…` Release 和扩展 ZIP、`SHA256SUMS` 均已存在，重新构建的资产必须与已发布资产逐字节相同，之后才向商店提交。它允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
+已有扩展 GitHub Release 时，在 main 手动运行扩展 Release 并启用 `submit_existing_release`，仅校验当前 manifest 版本的正式 `extension-v…` Release 和扩展 ZIP、`SHA256SUMS` 均已存在，重新构建的资产必须与已发布资产逐字节相同。需要将该版本送审或重试送审时，必须同时启用 `submit_to_store`。这允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用 `submit_existing_release` 时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
-商店条目可从 README 的 [Chrome Web Store 安装入口](../README.md#chrome-扩展)打开。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。工作流成功表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
+商店条目可从 README 的 [Chrome Web Store 安装入口](../README.md#chrome-扩展)打开。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。默认工作流成功仅表示 GitHub Release 完成；显式启用送审且 `submit` job 成功才表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
 
 发布使用 Google Workload Identity Federation 获取短期访问令牌，不保存服务账号密钥。仓库 Actions Variables 配置 `GCP_WIF_PROVIDER`、`CWS_SERVICE_ACCOUNT`、`CWS_PUBLISHER_ID` 和 `CWS_ITEM_ID`；Google 身份条件只允许本仓库 main 的 `.github/workflows/release.yml`，事件限定为 `push` 和 `workflow_dispatch`。令牌使用 Chrome Web Store scope。商店服务账号的权限覆盖发布者的所有条目，工作流将目标限定为上述 Item ID。
 

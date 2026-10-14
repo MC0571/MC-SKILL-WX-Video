@@ -7,8 +7,12 @@ on:
       - extension/manifest.json
   workflow_dispatch:
     inputs:
+      submit_to_store:
+        description: Upload and submit to the Chrome Web Store
+        type: boolean
+        default: false
       submit_existing_release:
-        description: Submit the existing GitHub Release after verifying every asset matches
+        description: Verify the existing GitHub Release without creating or changing assets
         type: boolean
         default: false
 
@@ -49,7 +53,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -129,6 +132,23 @@ jobs:
               gh release upload "$tag" --repo "$GITHUB_REPOSITORY" "$asset"
             fi
           done
+
+  submit:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.submit_to_store == true
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release
       - uses: google-github-actions/auth@v3
         id: auth
         with:

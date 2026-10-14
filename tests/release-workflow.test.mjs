@@ -4,14 +4,40 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-const body = workflow.match(/- name: Create or verify GitHub Release[\s\S]*?        run: \|\n([\s\S]*?)\n      - uses: google-github-actions\/auth/)[1]
+const body = workflow.match(/- name: Create or verify GitHub Release[\s\S]*?        run: \|\n([\s\S]*?)\n\n  submit:/)[1]
   .split('\n').map((line) => line.slice(10)).join('\n');
 const names = [
   'weixin-channels-video-extension-v0.2.1.zip',
   'SHA256SUMS',
 ];
+
+test('store submission requires an explicit manual opt-in on main after publishing', () => {
+  const submit = workflow.split('\n  submit:\n')[1];
+  const condition = submit.match(/^    if: (.+)$/m)[1];
+  assert.match(workflow, /submit_to_store:\n        description: .+\n        type: boolean\n        default: false/);
+  for (const [event, ref, inputs, allowed] of [
+    ['push', 'refs/heads/main', {}, false],
+    ['push', 'refs/heads/main', { submit_to_store: true }, false],
+    ['workflow_dispatch', 'refs/heads/main', {}, false],
+    ['workflow_dispatch', 'refs/heads/main', { submit_to_store: false }, false],
+    ['workflow_dispatch', 'refs/heads/main', { submit_existing_release: true }, false],
+    ['workflow_dispatch', 'refs/heads/main', { submit_to_store: true }, true],
+    ['workflow_dispatch', 'refs/heads/main', { submit_to_store: true, submit_existing_release: true }, true],
+    ['workflow_dispatch', 'refs/heads/feature', { submit_to_store: true }, false],
+  ]) {
+    assert.equal(runInNewContext(condition, { github: { event_name: event, ref }, inputs }), allowed,
+      JSON.stringify({ event, ref, inputs }));
+  }
+  assert.match(submit, /^    needs: publish$/m);
+  assert.match(submit, /id-token: write/);
+  assert.match(submit, /name: release-assets\n          path: dist\/release/);
+  assert.match(submit, /google-github-actions\/auth@/);
+  assert.match(submit, /run: node scripts\/chrome-web-store\.mjs/);
+  assert.doesNotMatch(workflow.split('\n  submit:\n')[0], /id-token: write|google-github-actions\/auth@|run: node scripts\/chrome-web-store\.mjs/);
+});
 
 async function runStep(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'cws-release-step-'));
