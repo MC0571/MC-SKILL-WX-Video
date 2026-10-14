@@ -21,7 +21,7 @@
 - **商店安装（默认）**：从 [Chrome Web Store](https://chromewebstore.google.com/detail/jdecfnemmnhbpamcfhmgjkcphgomgjoe) 安装。商店版本可能晚于 GitHub Release；以 Chrome 当前安装版本和实际界面为准。
 - **非商店安装（需明确选择）**：从 [GitHub Releases](https://github.com/MC0571/weixin-channels-video/releases) 下载 `weixin-channels-video-extension-v<版本>.zip`，并按同一 Release 的 `SHA256SUMS` 核验；也可按[构建说明](docs/architecture.md#构建与发布)从源码构建。将 ZIP 解压到会持续保留的位置，再在 `chrome://extensions` 启用开发者模式并加载该目录。不要把扩展放进 Skill 缓存；移动目录可能改变扩展 ID。开发者模式只用于此非商店安装方式。
 
-安装后，在同一 Chrome 用户中登录腾讯元宝，即可粘贴分享链接、预览视频并下载。分享链接草稿保存在当前用户的扩展本地存储中，清空输入框即可清除。有新版时，页面版本号替换为动态 `NEW` 图标，扩展图标显示 `NEW` 角标；商店版点击页面 `NEW` 进入插件详情页，ZIP 版直接下载安装包并打开扩展管理页。详细操作、下载记录、更新提示和 Agent 设置见[扩展使用说明](docs/extension.md)。
+安装后，在同一 Chrome 用户中登录腾讯元宝，即可粘贴分享链接、预览视频并下载。分享链接草稿保存在当前用户的扩展本地存储中，清空输入框即可清除。有新版时，页面名称右上角的版本号替换为红色 `NEW` 图标，扩展图标显示 `NEW` 角标；商店版点击页面 `NEW` 进入插件详情页，ZIP 版直接下载安装包并打开扩展管理页。详细操作、下载记录、更新提示和 Agent 设置见[扩展使用说明](docs/extension.md)。
 
 ## Agent Skill
 
@@ -103,3 +103,5 @@ npm run worker:deploy
 解析流程参考 [ltaoo/wx_channels_download](https://github.com/ltaoo/wx_channels_download) 的分享链接路线，主要参考其 [Worker 解析实现](https://github.com/ltaoo/wx_channels_download/blob/main/internal/workers/sph/worker.js) 和 [Go 解析实现](https://github.com/ltaoo/wx_channels_download/blob/main/pkg/scraper/wxchannels/yuanbao.go)。
 
 本仓库的许可见 [LICENSE](LICENSE)。参考项目采用 [MIT + Commons Clause](https://github.com/ltaoo/wx_channels_download/blob/main/LICENSE)，包含收费提供基于其功能的产品或服务的限制。若复用其代码，必须保留对应的版权与许可声明；涉及收费产品或服务时，应按其许可取得授权。
+
+更新提示图标来自 [Icons8 New（iOS Glyph）](https://icons8.com/icon/61006/new)，使用与分发限制见 [NOTICE.md](NOTICE.md)。

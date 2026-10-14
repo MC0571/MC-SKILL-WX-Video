@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+  <rect width="256" height="800" fill="#F5FAF6"/>
+  <rect width="256" height="198" fill="#07C160"/>
+  <rect x="252" width="4" height="800" fill="#FA9D3B"/>
+  <rect x="16" y="10" width="58" height="58" rx="13" fill="#FFFFFF"/>
+  <image href="../images/logo.svg" x="18" y="12" width="54" height="54" preserveAspectRatio="xMidYMid meet"/>
+  <text x="23" y="96" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="14" font-weight="600">微信视频号</text>
+  <text x="22" y="137" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="27" font-weight="800">轻松下载</text>
+  <text x="22" y="171" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="27" font-weight="800">视频号内容</text>
+
+  <circle cx="36" cy="254" r="13" fill="#FA9D3B"/>
+  <text x="31" y="259" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="13" font-weight="700">1</text>
+  <text x="59" y="260" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="16" font-weight="700">粘贴分享链接</text>
+  <text x="59" y="285" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="14" font-weight="500">解析封面、标题与作者</text>
+
+  <circle cx="36" cy="342" r="13" fill="#07C160"/>
+  <text x="31" y="347" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="13" font-weight="700">2</text>
+  <text x="59" y="348" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="16" font-weight="700">查看预览</text>
+  <text x="59" y="373" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="14" font-weight="500">再选要保存的视频版本</text>
+
+  <rect x="20" y="739" width="90" height="31" rx="15" fill="#FA9D3B"/>
+  <text x="31" y="760" fill="#10291B" font-family="Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif" font-size="14" font-weight="650">示例数据</text>
+  <image href="captures/parse.jpg" x="256" y="0" width="1024" height="800" preserveAspectRatio="xMidYMid meet"/>
+</svg>

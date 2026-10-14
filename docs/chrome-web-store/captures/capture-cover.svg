@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs>
+    <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#a5d8e6"/><stop offset="1" stop-color="#eef1dc"/></linearGradient>
+    <linearGradient id="sea" x2="0" y2="1"><stop stop-color="#2e7f8e"/><stop offset="1" stop-color="#174e61"/></linearGradient>
+    <linearGradient id="sand" x2="0" y2="1"><stop stop-color="#e8c993"/><stop offset="1" stop-color="#bf956b"/></linearGradient>
+    <linearGradient id="shade" x2="0" y2="1"><stop stop-color="#071d27" stop-opacity="0"/><stop offset="1" stop-color="#071d27" stop-opacity=".78"/></linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="url(#sky)"/>
+  <circle cx="490" cy="88" r="37" fill="#f4c875"/>
+  <path d="M0 170 105 122l65 32 90-62 107 79 91-44 182 57v39H0z" fill="#658b7b" opacity=".8"/>
+  <rect y="184" width="640" height="176" fill="url(#sea)"/>
+  <path d="M0 209c84-14 132 16 217 4s144-22 229-1 129 14 194 1v18c-72 13-111 7-191-5s-140 1-219 10-146-9-230 4z" fill="#b9e1d2" opacity=".78"/>
+  <path d="M0 262c115-19 181 14 287 2s230-23 353 5v91H0z" fill="url(#sand)"/>
+  <path d="M0 251c102-11 155 9 242-1 108-13 191-19 284 1s86 16 114 19v20c-72-19-140-29-223-20-99 11-172 25-271 10-69-10-101-9-146 0z" fill="#e9e3c6"/>
+  <path d="M38 242c41-7 75-8 114-2m66-8c45 7 75 6 117-1m75-1c45 3 73 10 111 8" fill="none" stroke="#f4e6bd" stroke-width="3" stroke-linecap="round" opacity=".8"/>
+  <rect width="640" height="360" fill="url(#shade)"/>
+  <rect x="28" y="27" width="92" height="28" rx="14" fill="#163d48" fill-opacity=".68"/>
+  <text x="74" y="46" text-anchor="middle" fill="#fff" font-family="sans-serif" font-size="14" letter-spacing="1">示例视频</text>
+  <text x="30" y="310" fill="#fff" font-family="sans-serif" font-size="31" font-weight="700">海边片段</text>
+  <text x="31" y="337" fill="#f2e7d0" font-family="sans-serif" font-size="14">海风停下来的时候，听见浪声</text>
+</svg>

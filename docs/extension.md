@@ -2,7 +2,7 @@
 
 安装方式见[项目 README](../README.md#chrome-扩展)。
 
-发现新版本时，标题旁的版本号替换为 Google Noto 动态 `NEW` 图标（系统开启减少动态效果时显示静态图标），Chrome 扩展图标也显示 `NEW` 角标；将图标固定到工具栏可直接看到提醒。商店安装版在 Chrome 确认更新已下载后显示 `NEW`，点击直接进入 Chrome 商店的插件详情页。非商店版低频检查公开的稳定扩展 Release，点击 `NEW` 直接下载对应 ZIP 安装包，并打开 `chrome://extensions/` 扩展管理页；下载后仍需解压并重新加载扩展。没有新版、检查失败或更新完成时只显示当前版本，不额外提示。GitHub 发布或提交商店审核不代表 Chrome Web Store 已发布该版本，商店版以 Chrome 实际提供的更新为准。
+发现新版本时，标题右上角的版本号替换为 Icons8 红色 `NEW` 图标，Chrome 扩展图标也显示 `NEW` 角标；将图标固定到工具栏可直接看到提醒。商店安装版在 Chrome 确认更新已下载后显示 `NEW`，点击直接进入 Chrome 商店的插件详情页。非商店版低频检查公开的稳定扩展 Release，点击 `NEW` 直接下载对应 ZIP 安装包，并打开 `chrome://extensions/` 扩展管理页；下载后仍需解压并重新加载扩展。没有新版、检查失败或更新完成时只显示当前版本，不额外提示。GitHub 发布或提交商店审核不代表 Chrome Web Store 已发布该版本，商店版以 Chrome 实际提供的更新为准。
 
 1. 在安装扩展的 Chrome 用户中登录 [腾讯元宝](https://yuanbao.tencent.com/)。
 2. 点击扩展图标，在打开的页面中粘贴分享链接并解析。

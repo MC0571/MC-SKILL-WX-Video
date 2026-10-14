@@ -86,9 +86,13 @@ h1 {
   text-decoration: none;
 }
 
-.product-version {
+.product-version,
+.product-new {
   align-self: flex-start;
   margin-top: 3px;
+}
+
+.product-version {
   padding: 2px 5px;
   border-radius: 4px;
   background: #eeede7;
@@ -113,8 +117,8 @@ h1 {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   text-decoration: none;
 }
@@ -123,11 +127,10 @@ h1 {
   background: var(--surface);
 }
 
-.product-new picture,
 .product-new img {
   display: block;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
 }
 
 .product-mark {
