@@ -279,11 +279,19 @@ function initializePage() {
   let downloadInProgress = false;
   let metadataListeners = [];
   let metadataProbes = [];
+  let inputInvalid = false;
 
   const setParseStatus = (message, isError = false) => {
     parseStatus.textContent = message;
     parseStatus.dataset.error = String(isError);
   };
+
+  input.addEventListener("input", () => {
+    if (!inputInvalid) return;
+    inputInvalid = false;
+    input.removeAttribute("aria-invalid");
+    setParseStatus("");
+  });
 
   function clearMediaVariants() {
     parseGeneration += 1;
@@ -421,6 +429,17 @@ function initializePage() {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!input.validity.valid) {
+      inputInvalid = true;
+      input.setAttribute("aria-invalid", "true");
+      setParseStatus(input.validity.valueMissing
+        ? "请先粘贴视频号分享链接，再点击解析。"
+        : "链接格式不正确，请粘贴完整的视频号分享链接。", true);
+      input.focus();
+      return;
+    }
+    inputInvalid = false;
+    input.removeAttribute("aria-invalid");
     const generation = clearMediaVariants();
     parseButton.disabled = true;
     downloadButton.disabled = true;

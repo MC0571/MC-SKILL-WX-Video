@@ -67,7 +67,7 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   details.append(name, metadata);
 
   const location = fileLocationLabel(item);
-  if (location) {
+  if (location && item.exists !== false) {
     const note = documentApi.createElement("span");
     note.className = "download-history-location";
     note.textContent = location;
@@ -75,7 +75,12 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   }
 
   row.append(details);
-  if (item.state === "complete" && item.exists !== false) {
+  if (location && item.exists === false) {
+    const unavailable = documentApi.createElement("span");
+    unavailable.className = "download-history-location download-history-action-status";
+    unavailable.textContent = location;
+    row.append(unavailable);
+  } else if (item.state === "complete") {
     const revealButton = documentApi.createElement("button");
     revealButton.type = "button";
     revealButton.className = "secondary-button history-reveal-button";
@@ -105,7 +110,7 @@ function appendDownloadRow(list, item, documentApi, chromeApi) {
   list.append(row);
 }
 
-function renderItems({ container, empty, items, documentApi, chromeApi, failed = false }) {
+function renderItems({ container, empty, items, documentApi, chromeApi, collapsedDays, reviewPrompt, failed = false, filtered = false }) {
   container.replaceChildren();
   if (failed) {
     empty.textContent = "暂时无法读取下载记录。";
@@ -113,7 +118,7 @@ function renderItems({ container, empty, items, documentApi, chromeApi, failed =
     return;
   }
   if (!items.length) {
-    empty.textContent = "还没有下载记录。";
+    empty.textContent = filtered ? "这个日期范围内没有下载记录。" : "还没有下载记录。";
     empty.hidden = false;
     return;
   }
@@ -126,14 +131,45 @@ function renderItems({ container, empty, items, documentApi, chromeApi, failed =
     groups.get(time.dayKey).items.push(item);
   }
 
-  for (const group of groups.values()) {
+  for (const [dayKey, group] of groups) {
     const section = documentApi.createElement("section");
     section.className = "download-history-day";
     const heading = documentApi.createElement("h3");
-    heading.textContent = group.label;
     const list = documentApi.createElement("ul");
     list.className = "download-history-list";
-    for (const item of group.items) appendDownloadRow(list, item, documentApi, chromeApi);
+    list.id = `${container.id}-${dayKey}`;
+    const toggle = documentApi.createElement("button");
+    toggle.type = "button";
+    toggle.className = "history-day-toggle";
+    toggle.setAttribute("aria-controls", list.id);
+    const chevron = documentApi.createElement("span");
+    chevron.className = "history-day-chevron";
+    chevron.textContent = "›";
+    chevron.setAttribute("aria-hidden", "true");
+    const label = documentApi.createElement("span");
+    label.textContent = group.label;
+    toggle.append(chevron, label);
+    const updateCollapsed = () => {
+      list.hidden = collapsedDays.has(dayKey);
+      toggle.setAttribute("aria-expanded", String(!list.hidden));
+      toggle.setAttribute("aria-label", `${list.hidden ? "展开" : "收起"} ${group.label}`);
+    };
+    updateCollapsed();
+    toggle.addEventListener("click", () => {
+      if (collapsedDays.has(dayKey)) collapsedDays.delete(dayKey);
+      else collapsedDays.add(dayKey);
+      updateCollapsed();
+    });
+    heading.append(toggle);
+    for (const item of group.items) {
+      appendDownloadRow(list, item, documentApi, chromeApi);
+      if (reviewPrompt && item === items[0]) {
+        const promptRow = documentApi.createElement("li");
+        promptRow.className = "review-feed-item";
+        promptRow.append(reviewPrompt);
+        list.append(promptRow);
+      }
+    }
     section.append(heading, list);
     container.append(section);
   }
@@ -147,24 +183,31 @@ export function initializeDownloadHistoryUi({
   if (!documentApi?.querySelector) return;
   const recentList = documentApi.querySelector("#recent-download-list");
   const recentEmpty = documentApi.querySelector("#recent-download-empty");
+  const reviewPrompt = documentApi.querySelector("#review-prompt");
   const homeView = documentApi.querySelector("#home-view");
   const historyView = documentApi.querySelector("#history-view");
   const openHistory = documentApi.querySelector("#open-download-history");
-  const backHome = documentApi.querySelector("#history-back");
+  const homeLink = documentApi.querySelector("#home-link");
+  const parseForm = documentApi.querySelector("#parse-form");
   const historyHeading = documentApi.querySelector("#history-heading");
   const historyList = documentApi.querySelector("#download-history-list");
   const historyEmpty = documentApi.querySelector("#download-history-empty");
   const orderButton = documentApi.querySelector("#history-order-toggle");
+  const orderLabel = documentApi.querySelector("#history-order-label");
+  const dateSelect = documentApi.querySelector("#history-date-filter");
   const loadMoreButton = documentApi.querySelector("#history-load-more");
   const liveStatus = documentApi.querySelector("#history-status");
   if (!recentList || !recentEmpty || !homeView || !historyView || !historyHeading ||
-      !historyList || !historyEmpty || !orderButton || !loadMoreButton || !liveStatus) return;
+      !historyList || !historyEmpty || !orderButton || !orderLabel || !dateSelect || !loadMoreButton || !liveStatus) return;
 
   let order = "desc";
+  let dateFilter = "all";
+  const collapsedDays = new Set();
   let nextCursor;
   let hasMore = false;
   let historyItems = [];
   let recentItems = [];
+  let recentFailed = false;
   let historyRequest = 0;
   let recentRequest = 0;
   let historyVisible = false;
@@ -179,16 +222,27 @@ export function initializeDownloadHistoryUi({
       const page = await loadDownloadHistoryPage(chromeApi, { pageSize: RECENT_PAGE_SIZE, order: "desc" });
       if (!active || request !== recentRequest) return;
       recentItems = page.items;
-      renderItems({ container: recentList, empty: recentEmpty, items: page.items, documentApi, chromeApi });
+      recentFailed = false;
+      renderItems({ container: recentList, empty: recentEmpty, items: page.items, documentApi, chromeApi, collapsedDays, reviewPrompt: historyVisible ? null : reviewPrompt });
     } catch {
       if (!active || request !== recentRequest) return;
-      renderItems({ container: recentList, empty: recentEmpty, items: [], documentApi, chromeApi, failed: true });
+      recentFailed = true;
+      renderItems({ container: recentList, empty: recentEmpty, items: [], documentApi, chromeApi, collapsedDays, failed: true });
     }
   }
 
-  async function loadHistory({ append = false, pageSize = HISTORY_PAGE_SIZE } = {}) {
+  async function loadHistory({ append = false, pageSize = HISTORY_PAGE_SIZE, reset = false } = {}) {
     if (loadingMore && append) return;
     const request = ++historyRequest;
+    if (reset) {
+      historyItems = [];
+      nextCursor = undefined;
+      hasMore = false;
+      historyList.replaceChildren();
+      historyList.scrollTop = 0;
+      historyEmpty.hidden = true;
+      loadMoreButton.hidden = true;
+    }
     if (!append) {
       retryFullLoad = false;
       retryPageSize = pageSize;
@@ -205,21 +259,22 @@ export function initializeDownloadHistoryUi({
         ...(append && nextCursor !== undefined ? { cursor: nextCursor } : {}),
         pageSize,
         order,
+        dateFilter,
       });
       if (!active || request !== historyRequest) return;
       historyItems = append ? [...historyItems, ...page.items] : page.items;
       nextCursor = page.nextCursor;
       hasMore = page.hasMore;
       retryFullLoad = false;
-      renderItems({ container: historyList, empty: historyEmpty, items: historyItems, documentApi, chromeApi });
-      liveStatus.textContent = historyItems.length ? `${historyItems.length} 条记录` : "";
+      renderItems({ container: historyList, empty: historyEmpty, items: historyItems, documentApi, chromeApi, collapsedDays, reviewPrompt: historyVisible ? reviewPrompt : null, filtered: dateFilter !== "all" });
+      liveStatus.textContent = `${historyItems.length} 条记录`;
       loadMoreButton.hidden = !hasMore;
       loadMoreButton.textContent = "加载更多";
     } catch {
       if (!active || request !== historyRequest) return;
       const canKeepExistingResults = !append && historyItems.length > 0;
       if (!append && !canKeepExistingResults) {
-        renderItems({ container: historyList, empty: historyEmpty, items: [], documentApi, chromeApi, failed: true });
+        renderItems({ container: historyList, empty: historyEmpty, items: [], documentApi, chromeApi, collapsedDays, failed: true });
       }
       liveStatus.textContent = "暂时无法读取下载记录。";
       if (append && hasMore) {
@@ -245,22 +300,37 @@ export function initializeDownloadHistoryUi({
     homeView.hidden = true;
     historyView.hidden = false;
     historyHeading.focus({ preventScroll: true });
-    void loadHistory();
+    void loadHistory({ reset: true });
   }
 
   function showHome() {
     historyVisible = false;
     historyView.hidden = true;
     homeView.hidden = false;
-    openHistory?.focus({ preventScroll: true });
+    renderItems({ container: recentList, empty: recentEmpty, items: recentItems, documentApi, chromeApi, collapsedDays, reviewPrompt, failed: recentFailed });
   }
 
   openHistory?.addEventListener("click", showHistory);
-  backHome?.addEventListener("click", showHome);
+  homeLink?.addEventListener("click", (event) => {
+    event.preventDefault();
+    showHome();
+  });
+  parseForm?.addEventListener("submit", showHome);
+  function updateOrderLabel() {
+    const label = order === "desc" ? "当前从最新到最早，切换为从最早到最新" : "当前从最早到最新，切换为从最新到最早";
+    orderButton.setAttribute("aria-label", label);
+    orderButton.title = label;
+    orderButton.dataset.order = order;
+    orderLabel.textContent = order === "desc" ? "最新优先" : "最早优先";
+  }
   orderButton.addEventListener("click", () => {
     order = order === "desc" ? "asc" : "desc";
-    orderButton.textContent = order === "desc" ? "切换为从旧到新" : "切换为从新到旧";
-    void loadHistory();
+    updateOrderLabel();
+    void loadHistory({ reset: true });
+  });
+  dateSelect.addEventListener("sl-change", () => {
+    dateFilter = dateSelect.value;
+    void loadHistory({ reset: true });
   });
   loadMoreButton.addEventListener("click", () => {
     if (retryFullLoad) {
@@ -270,7 +340,7 @@ export function initializeDownloadHistoryUi({
     }
   });
   loadMoreButton.hidden = true;
-  orderButton.textContent = "切换为从旧到新";
+  updateOrderLabel();
 
   const stopWatching = typeof chromeApi?.downloads?.onChanged?.addListener === "function"
     ? watchDownloadHistory(chromeApi, (item, change) => {

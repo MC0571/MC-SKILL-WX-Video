@@ -18,22 +18,22 @@ const BRIDGE_REASONS = new Set([
   "invalid_ready_message", "invalid_host_message", "protocol_unsupported",
 ]);
 const BRIDGE_MESSAGES = Object.freeze({
-  host_starting: "正在连接本地程序。",
-  host_ready: "浏览器已连接本地程序。",
-  failed: "连接本地程序失败。请让 AI 检查 Skill 状态。",
+  host_starting: "正在连接本地程序",
+  host_ready: "浏览器已连接本地程序",
+  failed: "复制提示词让你的 Agent 来代劳吧",
 });
 const BRIDGE_FAILURES = Object.freeze({
-  connect_native_failed: "浏览器连接本地程序失败。请让 AI 检查 Skill 配置。",
-  host_not_found: "找不到本地程序。请让 AI 检查 Skill 是否安装。",
-  host_not_registered: "本地程序尚未注册。请让 AI 检查 Skill 配置。",
-  host_start_failed: "本地程序启动失败。请让 AI 检查运行环境。",
-  host_access_forbidden: "浏览器未获准访问本地程序。请让 AI 检查扩展配置。",
-  host_exited: "本地程序已退出，连接未建立或已中断。请让 AI 检查本地桥接。",
-  host_communication_failed: "浏览器与本地程序通信失败。请让 AI 检查连接。",
-  host_disconnected: "与本地程序的连接已断开。请让 AI 检查连接。",
-  invalid_ready_message: "本地程序返回的启动状态无效。请让 AI 检查扩展和 Skill 版本。",
-  invalid_host_message: "本地程序返回的数据无法识别。请让 AI 检查扩展和 Skill 版本。",
-  protocol_unsupported: "扩展与本地程序协议不兼容。请让 AI 更新 Skill。",
+  connect_native_failed: "浏览器连接本地程序失败，请让 AI 检查 Skill 配置",
+  host_not_found: "找不到本地程序，请让 AI 检查 Skill 是否安装",
+  host_not_registered: "本地程序尚未注册，请让 AI 检查 Skill 配置",
+  host_start_failed: "本地程序启动失败，请让 AI 检查运行环境",
+  host_access_forbidden: "浏览器未获准访问本地程序，请让 AI 检查扩展配置",
+  host_exited: "本地程序已退出，连接未建立或已中断，请让 AI 检查本地桥接",
+  host_communication_failed: "浏览器与本地程序通信失败，请让 AI 检查连接",
+  host_disconnected: "与本地程序的连接已断开，请让 AI 检查连接",
+  invalid_ready_message: "本地程序返回的启动状态无效，请让 AI 检查扩展和 Skill 版本",
+  invalid_host_message: "本地程序返回的数据无法识别，请让 AI 检查扩展和 Skill 版本",
+  protocol_unsupported: "扩展与本地程序协议不兼容，请让 AI 更新 Skill",
 });
 
 function buildPrompt({ extensionId, instanceId }) {
@@ -61,26 +61,38 @@ function validLoginState(value) {
     (!Object.hasOwn(value, "error") || value.error === "LOGIN_CHECK_FAILED"));
 }
 
-function initializeBridgeStatus(chromeApi, documentApi) {
-  const status = documentApi.querySelector("#bridge-connection-status");
+function initializeBridgeStatus(chromeApi, windowApi, documentApi) {
+  const light = documentApi.querySelector("#agent-connection-light");
+  const button = documentApi.querySelector("#ai-download-prompt-open");
+  const tooltip = documentApi.querySelector("#agent-connection-tooltip");
   const storage = chromeApi?.storage?.local;
   const changes = chromeApi?.storage?.onChanged;
-  if (!status || typeof storage?.get !== "function" || typeof changes?.addListener !== "function") return;
+  if (!light || !button || !tooltip || typeof storage?.get !== "function" || typeof changes?.addListener !== "function") return;
+
+  const resetTooltip = () => { delete button.dataset.tooltipDismissed; };
+  button.addEventListener("pointerenter", resetTooltip);
+  button.addEventListener("focus", resetTooltip);
+  button.addEventListener("click", () => { button.dataset.tooltipDismissed = "true"; });
+  windowApi.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") button.dataset.tooltipDismissed = "true";
+  });
 
   let changeVersion = 0;
   const render = (value) => {
-    if (!validBridgeState(value)) {
-      status.textContent = "";
-      status.hidden = true;
-      status.removeAttribute("data-error");
-      return;
-    }
-    status.textContent = value.stage === "failed"
+    const stage = validBridgeState(value) ? value.stage : undefined;
+    const label = ({
+      host_ready: "已连接", host_starting: "正在连接", failed: "未连接",
+    })[stage] ?? "连接状态尚未确认";
+    light.dataset.state = ({
+      host_ready: "connected", host_starting: "connecting", failed: "disconnected",
+    })[stage] ?? "unknown";
+    button.setAttribute("aria-label", `Agent 设置，${label}`);
+    const description = stage === "failed"
       ? BRIDGE_FAILURES[value.reason] ?? BRIDGE_MESSAGES.failed
-      : BRIDGE_MESSAGES[value.stage];
-    status.hidden = false;
-    status.dataset.error = String(value.stage === "failed");
+      : BRIDGE_MESSAGES[stage] ?? label;
+    tooltip.textContent = description;
   };
+  render(undefined);
   changes.addListener((items, area) => {
     if (area !== "local" || !Object.hasOwn(items ?? {}, CONNECTION_STORAGE_KEY)) return;
     changeVersion += 1;
@@ -107,7 +119,7 @@ function initializeLoginStatus(chromeApi, windowApi, documentApi) {
       link.hidden = true;
       return;
     }
-    status.hidden = false;
+    status.hidden = value.login === "authenticated";
     link.hidden = value.login !== "anonymous";
     status.textContent = ({
       authenticated: "腾讯元宝：已登录。",
@@ -132,22 +144,13 @@ function initializeLoginStatus(chromeApi, windowApi, documentApi) {
   catch { /* A closed or unavailable extension runtime cannot refresh this snapshot. */ }
 }
 
-function initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity) {
-  const version = documentApi.querySelector("#extension-version");
-  const instance = documentApi.querySelector("#agent-instance-id");
+function initializeAgentIdentity(chromeApi, setPromptIdentity) {
   const extensionId = chromeApi?.runtime?.id;
   const validExtensionId = typeof extensionId === "string" && EXTENSION_ID_PATTERN.test(extensionId);
-  try {
-    const manifestVersion = chromeApi?.runtime?.getManifest?.()?.version;
-    if (version) version.textContent = typeof manifestVersion === "string" && manifestVersion ? manifestVersion : "unknown";
-  } catch {
-    if (version) version.textContent = "unknown";
-  }
   const storage = chromeApi?.storage?.local;
   const changes = chromeApi?.storage?.onChanged;
   const render = (id, errorMessage) => {
     const validInstanceId = typeof id === "string" && INSTANCE_ID_PATTERN.test(id);
-    if (instance) instance.textContent = validInstanceId ? id.slice(0, 8) : errorMessage ? "暂不可用" : "检查中";
     if (validExtensionId && validInstanceId) {
       setPromptIdentity?.({ extensionId, instanceId: id });
     } else {
@@ -187,15 +190,25 @@ function initializePrompt(windowApi, documentApi) {
   const promptText = documentApi.querySelector("#ai-download-prompt-text");
   const copyButton = documentApi.querySelector("#ai-download-prompt-copy");
   const copyStatus = documentApi.querySelector("#ai-prompt-copy-status");
+  const copyAlert = documentApi.querySelector("#ai-prompt-copy-alert");
+  const copyAlertHeading = documentApi.querySelector("#ai-prompt-copy-alert-heading");
   const copyLabel = documentApi.querySelector("#ai-download-prompt-copy-label");
   const copyIcon = documentApi.querySelector("#ai-download-prompt-copy-icon");
+  const spinner = documentApi.querySelector("#ai-download-prompt-copy-spinner");
   const successIcon = documentApi.querySelector("#ai-download-prompt-copy-success");
-  if (!openButton || !popover || !promptText || !copyButton || !copyStatus || !copyLabel || !copyIcon || !successIcon) return;
+  if (!openButton || !popover || !promptText || !copyButton || !copyStatus || !copyAlert || !copyAlertHeading || !copyLabel || !copyIcon || !spinner || !successIcon) return;
+  const setCopyStatus = (message, error = false, heading = "提示词暂不可用") => {
+    copyStatus.textContent = message;
+    copyStatus.dataset.error = String(error);
+    copyAlertHeading.textContent = heading;
+    copyAlertHeading.hidden = !error;
+    copyAlert.variant = error ? "danger" : "neutral";
+    copyAlert.hidden = !message;
+  };
   let identityReady = false;
   copyButton.disabled = true;
   promptText.value = "";
-  copyStatus.textContent = IDENTITY_WAITING;
-  copyStatus.dataset.error = "false";
+  setCopyStatus(IDENTITY_WAITING);
   const updatePosition = () => {
     if (!popover.matches(":popover-open")) return;
     const anchor = openButton.getBoundingClientRect();
@@ -217,40 +230,39 @@ function initializePrompt(windowApi, documentApi) {
   let copiedTimer;
   let copyAttempt = 0;
   const resetCopied = () => {
+    windowApi.clearTimeout(copiedTimer);
+    delete copyButton.dataset.copying;
     delete copyButton.dataset.copied;
+    copyButton.removeAttribute("aria-busy");
     copyLabel.textContent = "复制提示词";
     copyIcon.hidden = false;
+    spinner.hidden = true;
     successIcon.hidden = true;
   };
   const setPromptIdentity = (identity, errorMessage) => {
     copyAttempt += 1;
-    windowApi.clearTimeout(copiedTimer);
     resetCopied();
     identityReady = Boolean(identity);
     copyButton.disabled = !identityReady;
     promptText.value = identity ? buildPrompt(identity) : "";
-    copyStatus.textContent = identity ? "" : errorMessage;
-    copyStatus.dataset.error = String(!identity && errorMessage !== IDENTITY_WAITING);
+    setCopyStatus(identity ? "" : errorMessage, !identity && errorMessage !== IDENTITY_WAITING);
   };
   const showCopied = () => {
     windowApi.clearTimeout(copiedTimer);
+    delete copyButton.dataset.copying;
+    copyButton.removeAttribute("aria-busy");
     copyButton.dataset.copied = "true";
     copyLabel.textContent = "已复制";
     copyIcon.hidden = true;
+    spinner.hidden = true;
     successIcon.hidden = false;
-    copiedTimer = windowApi.setTimeout(() => {
-      delete copyButton.dataset.copied;
-      copyLabel.textContent = "复制提示词";
-      copyIcon.hidden = false;
-      successIcon.hidden = true;
-    }, 2000);
+    copiedTimer = windowApi.setTimeout(resetCopied, 2500);
   };
 
   popover.addEventListener("beforetoggle", (event) => {
     if (event.newState !== "open") return;
     if (identityReady) {
-      copyStatus.textContent = "";
-      copyStatus.dataset.error = "false";
+      setCopyStatus("");
     }
     delete popover.dataset.positioned;
   });
@@ -272,21 +284,27 @@ function initializePrompt(windowApi, documentApi) {
   copyButton.addEventListener("click", async () => {
     if (!identityReady || copyButton.disabled) return;
     const attempt = ++copyAttempt;
-    windowApi.clearTimeout(copiedTimer);
     resetCopied();
+    setCopyStatus("");
+    copyButton.dataset.copying = "true";
+    copyButton.setAttribute("aria-busy", "true");
+    copyIcon.hidden = true;
+    spinner.hidden = false;
+    copyLabel.textContent = "复制中…";
+    const startedAt = windowApi.performance.now();
     try {
       await windowApi.navigator.clipboard.writeText(promptText.value);
       if (attempt !== copyAttempt) return;
-      copyStatus.textContent = "提示词已复制。请切换到 Agent 对话框并自行粘贴。";
-      copyStatus.dataset.error = "false";
-      showCopied();
-      updatePosition();
+      const delay = windowApi.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? 0 : Math.max(0, 250 - (windowApi.performance.now() - startedAt));
+      if (delay > 0) copiedTimer = windowApi.setTimeout(showCopied, delay);
+      else showCopied();
     } catch {
       if (attempt !== copyAttempt) return;
+      resetCopied();
       promptText.focus();
       promptText.select();
-      copyStatus.textContent = "复制失败，全文已选中。请按 Command+C（Mac）或 Ctrl+C（Windows/Linux）手动复制。";
-      copyStatus.dataset.error = "true";
+      setCopyStatus("全文已选中，请按 ⌘C（Mac）或 Ctrl+C（Windows/Linux）手动复制。", true, "自动复制失败");
       updatePosition();
     }
   });
@@ -299,9 +317,16 @@ export function initializeAgentUI({
   documentApi = globalThis.document,
 } = {}) {
   if (!documentApi?.querySelector) return;
-  initializeBridgeStatus(chromeApi, documentApi);
+  const versionBadge = documentApi.querySelector("#extension-version");
+  if (versionBadge) {
+    const version = chromeApi.runtime.getManifest().version;
+    versionBadge.textContent = `v${version}`;
+    versionBadge.setAttribute("aria-label", `扩展版本 ${version}`);
+    versionBadge.hidden = false;
+  }
+  initializeBridgeStatus(chromeApi, windowApi, documentApi);
   initializeLoginStatus(chromeApi, windowApi, documentApi);
   const setPromptIdentity = initializePrompt(windowApi, documentApi);
-  initializeAgentIdentity(chromeApi, documentApi, setPromptIdentity);
+  initializeAgentIdentity(chromeApi, setPromptIdentity);
   initializeUpdateUi({ documentApi, chromeApi });
 }

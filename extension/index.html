@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>视频号分享链接解析</title>
+    <title>视频号下载</title>
+    <link rel="stylesheet" href="./agent.css">
     <link rel="stylesheet" href="./styles.css">
     <script type="module" src="./agent.js"></script>
   </head>
@@ -11,31 +12,36 @@
     <main class="shell">
       <header class="page-header">
         <div class="page-title-row">
-          <h1>解析视频号分享链接</h1>
-          <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer">项目主页</a>
-          <button
-            id="ai-download-prompt-open"
-            class="secondary-button ai-prompt-launch"
-            type="button"
-            aria-haspopup="dialog"
-            aria-controls="ai-download-prompt-popover"
-            aria-expanded="false"
-            popovertarget="ai-download-prompt-popover"
-          >
-            <img src="./icons/terminal.svg" alt="" aria-hidden="true">
-            <span>Agent 设置</span>
-          </button>
+          <h1><a id="home-link" class="product-home-link" href="#home-view"><img class="product-mark" src="./icons/wechat-channels.png" alt="" aria-hidden="true">视频号下载<span id="extension-version" class="product-version" hidden></span></a></h1>
+          <div class="header-actions">
+            <sl-tooltip class="instant-tooltip" content="喜欢这个插件？欢迎到 GitHub 点个 Star" placement="bottom" hoist>
+              <a id="repository-link" class="repository-link" target="_blank" rel="noreferrer">
+                <img src="./icons/github.svg" alt="" aria-hidden="true">
+                <span class="repository-label"><span id="repository-link-label">Star 一下</span><span class="repository-stars" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span></span>
+              </a>
+            </sl-tooltip>
+            <button
+              id="ai-download-prompt-open"
+              class="secondary-button ai-prompt-launch"
+              type="button"
+              aria-haspopup="dialog"
+              aria-controls="ai-download-prompt-popover"
+              aria-expanded="false"
+              aria-describedby="agent-connection-tooltip"
+              popovertarget="ai-download-prompt-popover"
+            >
+              <span class="agent-launch-icons" aria-hidden="true">
+                <img src="./icons/agents/chatgpt.svg" alt="">
+                <img src="./icons/agents/claude.svg" alt="">
+                <img src="./icons/agents/workbuddy.svg" alt="">
+              </span>
+              <span>Agent 设置</span>
+              <span id="agent-connection-light" class="agent-connection-light" data-state="unknown" aria-hidden="true"></span>
+              <span id="agent-connection-tooltip" class="agent-connection-tooltip" role="tooltip"></span>
+            </button>
+          </div>
         </div>
-        <p class="intro">粘贴公开分享链接，解析后预览并保存视频。</p>
       </header>
-
-      <section id="first-open-guide" class="inline-guide" aria-labelledby="first-open-guide-heading" hidden>
-        <div>
-          <h2 id="first-open-guide-heading">开始使用</h2>
-          <p>感谢使用。觉得工具有帮助？可以访问 <a id="guide-repository-link" target="_blank" rel="noreferrer">项目主页</a> 了解并支持项目。</p>
-        </div>
-        <button id="first-open-guide-dismiss" class="text-button" type="button" aria-label="关闭使用提示">知道了</button>
-      </section>
 
       <div
         id="ai-download-prompt-popover"
@@ -48,33 +54,36 @@
       >
         <div class="ai-prompt-heading-row">
           <h2 id="ai-prompt-heading">Agent 设置</h2>
-          <div class="ai-agent-icons" role="group" aria-label="Agent 图标">
-            <img src="./icons/agents/codex.png" alt="Codex" title="Codex" width="24" height="24">
-            <img src="./icons/agents/claude-code.png" alt="Claude Code" title="Claude Code" width="24" height="24">
-            <img src="./icons/agents/workbuddy.svg" alt="WorkBuddy" title="WorkBuddy" width="24" height="24">
-            <img src="./icons/agents/doubao-work.png" alt="豆包工作" title="豆包工作" width="24" height="24">
-            <img src="./icons/agents/qwen-work.png" alt="千问办公（QwenWork）" title="千问办公（QwenWork）" width="24" height="24">
-            <img src="./icons/agents/trae.png" alt="Trae" title="Trae" width="24" height="24">
-          </div>
         </div>
         <p id="ai-prompt-description" class="visually-hidden">
           检查完整提示词后，可复制并粘贴给 Agent；此面板不会自动执行下载。
         </p>
-        <p id="bridge-connection-status" class="status bridge-connection-status" role="status" aria-live="polite" hidden></p>
-        <p class="extension-version">扩展版本：<span id="extension-version">unknown</span></p>
-        <p class="extension-version">当前浏览器连接标识：<span id="agent-instance-id">检查中</span>（用于区分多个 Chrome 用户，不是配对码）</p>
         <textarea id="ai-download-prompt-text" rows="12" readonly aria-label="提示词全文"></textarea>
-        <p id="ai-prompt-copy-status" class="status ai-prompt-copy-status" role="status" aria-live="polite"></p>
+        <sl-alert id="ai-prompt-copy-alert" class="ai-prompt-copy-status" variant="danger" open hidden>
+          <svg slot="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M12 7.5v5.5m0 3h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <strong id="ai-prompt-copy-alert-heading"></strong>
+          <span id="ai-prompt-copy-status"></span>
+        </sl-alert>
         <button id="ai-download-prompt-copy" class="ai-prompt-copy" type="button" disabled>
-          <img id="ai-download-prompt-copy-icon" src="./icons/copy.svg" alt="" aria-hidden="true">
-          <span id="ai-download-prompt-copy-success" class="copy-success-icon" aria-hidden="true" hidden>✓</span>
-          <span id="ai-download-prompt-copy-label">复制提示词</span>
+          <span class="copy-feedback-icon" aria-hidden="true">
+            <img id="ai-download-prompt-copy-icon" src="./icons/copy.svg" alt="">
+            <span id="ai-download-prompt-copy-spinner" class="copy-spinner" hidden></span>
+            <span id="ai-download-prompt-copy-success" class="copy-success-icon" hidden>
+              <svg viewBox="0 0 24 24" width="22" height="22">
+                <circle cx="12" cy="12" r="11" fill="currentColor" opacity=".12"/>
+                <path d="m6.5 12 3.5 3.5 7.5-7.5" pathLength="1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+          </span>
+          <span id="ai-download-prompt-copy-label" aria-live="polite" aria-atomic="true">复制提示词</span>
         </button>
       </div>
 
-      <div id="home-view">
       <section class="card input-card" aria-label="解析视频号分享链接">
-        <form id="parse-form">
+        <form id="parse-form" novalidate>
           <label class="visually-hidden" for="share-url">视频号分享链接</label>
           <div class="form-row">
             <input
@@ -86,7 +95,8 @@
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              placeholder="https://weixin.qq.com/sph/..."
+              placeholder="粘贴视频号分享链接，如 https://weixin.qq.com/sph/..."
+              aria-describedby="parse-status"
               required
             >
             <button id="parse-button" class="primary-button" type="submit">解析视频</button>
@@ -99,6 +109,7 @@
         </div>
       </section>
 
+      <div id="home-view" class="home-view">
       <section id="result-card" class="card result-card" aria-labelledby="result-heading" hidden>
         <div class="result-heading">
           <h2 id="result-heading">视频信息</h2>
@@ -128,39 +139,61 @@
         </div>
       </section>
 
-      <section id="review-prompt" class="inline-review-prompt" aria-label="评价扩展" hidden>
-        <p>如果这个插件对您有帮助，请给个 5 星好评吧，爱你呦💗</p>
-        <div class="inline-actions">
-          <a id="review-link" class="text-button" target="_blank" rel="noreferrer">去评价</a>
-          <button id="review-dismiss" class="text-button" type="button">不再提醒</button>
-        </div>
-      </section>
-
       <section class="card recent-downloads" aria-labelledby="recent-download-heading">
         <div class="section-heading-row">
           <h2 id="recent-download-heading">最近下载</h2>
           <button id="open-download-history" class="text-button" type="button">查看全部</button>
         </div>
-        <div id="recent-download-list" class="download-history-list" aria-live="polite"></div>
+        <div class="history-scroll-frame">
+          <div id="recent-download-list" class="download-history-list" aria-live="polite">
+            <section id="review-prompt" class="inline-review-prompt" aria-label="评价扩展" hidden>
+              <a id="review-link" class="review-link" target="_blank" rel="noreferrer">如果这个插件对您有帮助，请给个 5 星好评吧，爱你呦💗</a>
+              <sl-tooltip class="instant-tooltip" content="不再提醒" hoist>
+                <button id="review-dismiss" type="button" aria-label="不再提醒">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                    <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </sl-tooltip>
+            </section>
+          </div>
+        </div>
         <p id="recent-download-empty" class="status history-empty" role="status" aria-live="polite" hidden></p>
         <p id="download-status" class="status recent-download-status" role="status" aria-live="polite"></p>
       </section>
       </div>
 
       <section id="history-view" class="history-view" aria-labelledby="history-heading" hidden>
-        <div class="section-heading-row">
-          <button id="history-back" class="text-button" type="button">返回解析</button>
-          <h2 id="history-heading" tabindex="-1">下载记录</h2>
-          <button id="history-order-toggle" class="text-button" type="button"></button>
+        <h2 id="history-heading" class="visually-hidden" tabindex="-1">下载记录</h2>
+        <div class="history-toolbar">
+          <sl-button id="history-order-toggle" class="history-order-toggle" size="small" type="button">
+            <svg slot="prefix" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M5 4v12m0 0 3-3m-3 3-3-3M15 16V4m0 0-3 3m3-3 3 3"></path>
+            </svg>
+            <span id="history-order-label">最新优先</span>
+          </sl-button>
+          <sl-select id="history-date-filter" class="history-date-filter-control" size="small" value="all" label="按日期筛选下载记录" hoist>
+            <svg slot="prefix" class="history-calendar-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <rect x="3" y="4.5" width="14" height="13" rx="2"></rect>
+              <path d="M6.5 2.5v4M13.5 2.5v4M3 8h14"></path>
+            </svg>
+            <sl-option value="all">全部日期</sl-option>
+            <sl-option value="today">今日</sl-option>
+            <sl-option value="yesterday">昨日</sl-option>
+            <sl-option value="last7">近 7 日</sl-option>
+            <sl-option value="last30">近 30 日</sl-option>
+            <sl-option value="older">更早</sl-option>
+          </sl-select>
+          <p id="history-status" class="status" role="status" aria-live="polite"></p>
         </div>
-        <p id="history-status" class="status" role="status" aria-live="polite"></p>
-        <div id="download-history-list"></div>
+        <div class="history-scroll-frame">
+          <div id="download-history-list" class="history-results"></div>
+        </div>
         <p id="download-history-empty" class="status history-empty" role="status" aria-live="polite" hidden></p>
         <button id="history-load-more" class="secondary-button history-load-more" type="button" hidden>加载更多</button>
       </section>
 
       <footer class="page-footer">
-        <span>分享链接用于解析请求；反馈由你自愿填写并提交至飞书。</span>
         <a id="privacy-link" target="_blank" rel="noreferrer">隐私政策</a>
         <a id="feedback-link" target="_blank" rel="noreferrer">问题与建议</a>
       </footer>

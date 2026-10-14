@@ -17,6 +17,7 @@
     "worker:deploy": "wrangler deploy --config worker/wrangler.toml"
   },
   "devDependencies": {
+    "@shoelace-style/shoelace": "2.20.1",
     "esbuild": "0.28.2",
     "wrangler": "4.148.0"
   },

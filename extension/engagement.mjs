@@ -1,6 +1,6 @@
 import { LINKS } from "./config.mjs";
 
-export const FIRST_OPEN_GUIDE_KEY = "weixin-channels-video:first-open-guide-shown";
+export const REPOSITORY_LINK_CLICKED_KEY = "weixin-channels-video:repository-link-clicked";
 export const FIRST_SUCCESSFUL_PARSE_KEY = "weixin-channels-video:first-successful-parse-at";
 export const REVIEW_PROMPT_HANDLED_KEY = "weixin-channels-video:review-prompt-handled";
 
@@ -22,17 +22,14 @@ export function initializeEngagementUi({
   if (!documentApi?.querySelector) return null;
 
   const repositoryLink = documentApi.querySelector("#repository-link");
-  const guideRepositoryLink = documentApi.querySelector("#guide-repository-link");
+  const repositoryLabel = documentApi.querySelector("#repository-link-label");
   const privacyLink = documentApi.querySelector("#privacy-link");
   const feedbackLink = documentApi.querySelector("#feedback-link");
   if (repositoryLink) repositoryLink.href = LINKS.repository;
-  if (guideRepositoryLink) guideRepositoryLink.href = LINKS.repository;
   if (privacyLink) privacyLink.href = LINKS.privacy;
   if (feedbackLink && LINKS.feedback) feedbackLink.href = LINKS.feedback;
   if (feedbackLink && !LINKS.feedback) feedbackLink.hidden = true;
 
-  const guide = documentApi.querySelector("#first-open-guide");
-  const guideDismiss = documentApi.querySelector("#first-open-guide-dismiss");
   const reviewPrompt = documentApi.querySelector("#review-prompt");
   const reviewLink = documentApi.querySelector("#review-link");
   const reviewDismiss = documentApi.querySelector("#review-dismiss");
@@ -45,6 +42,29 @@ export function initializeEngagementUi({
   let changedState = {};
   let stateLoaded = false;
   let active = true;
+
+  const renderRepositoryLink = () => {
+    const clicked = currentState[REPOSITORY_LINK_CLICKED_KEY] === true;
+    if (repositoryLabel) repositoryLabel.textContent = clicked ? "Github" : "Star 一下";
+    if (repositoryLink) {
+      if (stateLoaded && !clicked) repositoryLink.dataset.starNudge = "true";
+      else delete repositoryLink.dataset.starNudge;
+    }
+  };
+  const markRepositoryClicked = async () => {
+    currentState[REPOSITORY_LINK_CLICKED_KEY] = true;
+    changedState[REPOSITORY_LINK_CLICKED_KEY] = true;
+    renderRepositoryLink();
+    try {
+      await storage.set({ [REPOSITORY_LINK_CLICKED_KEY]: true });
+    } catch {
+      // Keep the clicked state on this page if profile storage is unavailable.
+    }
+  };
+  repositoryLink?.addEventListener("click", markRepositoryClicked);
+  repositoryLink?.addEventListener("auxclick", (event) => {
+    if (event.button === 1) return markRepositoryClicked();
+  });
 
   const renderReviewPrompt = () => {
     if (reviewPrompt) {
@@ -64,9 +84,6 @@ export function initializeEngagementUi({
     }
   };
 
-  guideDismiss?.addEventListener("click", () => {
-    if (guide) guide.hidden = true;
-  });
   reviewLink?.addEventListener("click", () => {
     windowApi?.setTimeout?.(() => { void markReviewHandled(); }, 0);
   });
@@ -74,6 +91,12 @@ export function initializeEngagementUi({
 
   const onStorageChanged = (changes, areaName) => {
     if (areaName !== "local" || !active) return;
+    if (Object.hasOwn(changes ?? {}, REPOSITORY_LINK_CLICKED_KEY)) {
+      const value = changes[REPOSITORY_LINK_CLICKED_KEY].newValue;
+      currentState[REPOSITORY_LINK_CLICKED_KEY] = value;
+      changedState[REPOSITORY_LINK_CLICKED_KEY] = value;
+      renderRepositoryLink();
+    }
     if (Object.hasOwn(changes ?? {}, FIRST_SUCCESSFUL_PARSE_KEY)) {
       const value = changes[FIRST_SUCCESSFUL_PARSE_KEY].newValue;
       currentState[FIRST_SUCCESSFUL_PARSE_KEY] = value;
@@ -93,15 +116,11 @@ export function initializeEngagementUi({
     chromeApi?.storage?.onChanged?.removeListener?.(onStorageChanged);
   }, { once: true });
 
-  void storage.get([FIRST_OPEN_GUIDE_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY]).then((stored) => {
+  void storage.get([REPOSITORY_LINK_CLICKED_KEY, FIRST_SUCCESSFUL_PARSE_KEY, REVIEW_PROMPT_HANDLED_KEY]).then((stored) => {
     if (!active) return;
     currentState = { ...stored, ...changedState };
     stateLoaded = true;
-    if (guide && currentState[FIRST_OPEN_GUIDE_KEY] !== true) {
-      guide.hidden = false;
-      currentState[FIRST_OPEN_GUIDE_KEY] = true;
-      void storage.set({ [FIRST_OPEN_GUIDE_KEY]: true }).catch(() => {});
-    }
+    renderRepositoryLink();
     renderReviewPrompt();
   }).catch(() => {
     if (reviewPrompt) reviewPrompt.hidden = true;

@@ -115,7 +115,10 @@ export function createAgentCommandHandler({
 }
 
 if (typeof document !== "undefined") {
-  const initialize = () => initializeAgentUI();
+  const initialize = async () => {
+    await import("./ui-components.mjs");
+    initializeAgentUI();
+  };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, { once: true });
   else initialize();
 }
