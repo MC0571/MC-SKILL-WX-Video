@@ -81,6 +81,8 @@ def bundle():
     if output.exists():
         shutil.rmtree(output)
     shutil.copytree(source, output)
+    # SkillHub rejects extensionless files, including the standalone archive's LICENSE.
+    output.joinpath("LICENSE").rename(output / "LICENSE.txt")
     output.joinpath("SKILL.md").write_text(
         "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False) + "---\n" + match[2],
         encoding="utf-8",
@@ -134,7 +136,11 @@ def publication_result(payload):
             raise ValueError("SkillHub returned an invalid HTTP error status")
         category = {401: "authentication_failed", 403: "permission_denied",
                     409: "conflict", 429: "rate_limited"}.get(status, "http_error")
-        return {"status": "failed", "httpStatus": status, "error": category}
+        result = {"status": "failed", "httpStatus": status, "error": category}
+        body = payload.get("body")
+        if status == 400 and isinstance(body, dict) and body.get("error") == "不允许的文件类型: LICENSE":
+            result["reason"] = "unsupported_extensionless_license"
+        return result
     result = {key: payload[key] for key in ("skillId", "status", "publicUrl") if key in payload}
     if not isinstance(result.get("status"), str):
         raise ValueError("SkillHub did not return a publication status; check dashboard before retrying")

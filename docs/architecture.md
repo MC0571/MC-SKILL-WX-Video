@@ -135,7 +135,7 @@ npm run release:package
 
 `.github/workflows/skillhub-release.yml` 仅发布 `skills/weixin-channels-video` 对应的独立构建包。PR 执行构建、归档验收和 SkillHub dry-run，不读取发布密钥；合入受保护的 `main` 后重新检查，分发输入有变化且 `version.json` 严格递增时自动提交，无逐次人工审批。版本使用稳定三段 SemVer，并遵守运行资源现有的单段 65535 上限。`skills/weixin-channels-video/**`、`src/**`、构建脚本、依赖清单及 LICENSE 作为分发输入保守检查；这些文件变化但没有升版会阻断该工作流。发布配置自身变化只验证，不回填历史版本。
 
-发布沿用 `node scripts/build.mjs --release --component skill` 的产物，在临时副本的 YAML frontmatter 中派生 `slug`、`version` 和 `displayName`，不另维护源版本。CLI 固定版本及 SHA256，Actions 固定完整提交。仓库 Secret `SKILLHUB_KEY` 仅提供给正式发布步骤；Repository Variables `SKILLHUB_PUBLISHER` 和 `SKILLHUB_NAMESPACE` 分别核对令牌 handle 及目标命名空间。发布者和命名空间必须与平台已有条目一致。
+发布沿用 `node scripts/build.mjs --release --component skill` 的产物，在临时副本的 YAML frontmatter 中派生 `slug`、`version` 和 `displayName`，不另维护源版本。SkillHub 不接受无扩展名的 `LICENSE`，该副本将其改名为 `LICENSE.txt` 并保留全文。CLI 固定版本及 SHA256，Actions 固定完整提交。仓库 Secret `SKILLHUB_KEY` 仅提供给正式发布步骤；Repository Variables `SKILLHUB_PUBLISHER` 和 `SKILLHUB_NAMESPACE` 分别核对令牌 handle 及目标命名空间。发布者和命名空间必须与平台已有条目一致。
 
 同一分支的运行串行执行。正式发布前确认待发布提交仍是 `main` HEAD，并核对公开条目的归属和版本；相同版本跳过，较新版本、身份不符或任何请求错误均停止，不覆盖、改名或自动重试。公开 404 不能排除安全扫描或审核中的提交，只允许原始 push 的首次运行交由发布接口判定；rerun 遇到 404 时停止，需维护者先在个人中心核实状态。只保存状态、条目 ID、平台返回的 URL 或 HTTP 状态与固定错误类别，不上传原始响应；`pending_review` 表示已提交审核，不代表公开。
 
