@@ -25,6 +25,7 @@ const buildSkill = releaseComponent === 'both' || releaseComponent === 'skill';
 const EXTENSION_ASSETS = [
   'manifest.json',
   'index.html',
+  'about.html',
   'styles.css',
   'background.js',
   'agent.js',
@@ -65,7 +66,6 @@ if (buildSkill) {
   await cp(join(skill, 'SKILL.md'), join(skillOutput, 'SKILL.md'));
   await cp(join(skill, 'version.json'), join(skillOutput, 'version.json'));
   await cp(join(root, 'LICENSE'), join(skillOutput, 'LICENSE'));
-  await cp(join(root, 'NOTICE.md'), join(skillOutput, 'NOTICE.md'));
   await cp(join(skill, 'scripts/run.mjs'), join(skillOutput, 'scripts/run.mjs'));
   await cp(join(skill, 'scripts/runtime-support.mjs'), join(skillOutput, 'scripts/runtime-support.mjs'));
   await cp(join(skill, 'scripts/windows-security.mjs'), join(skillOutput, 'scripts/windows-security.mjs'));

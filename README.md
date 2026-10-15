@@ -104,4 +104,4 @@ npm run worker:deploy
 
 本仓库的许可见 [LICENSE](LICENSE)。参考项目采用 [MIT + Commons Clause](https://github.com/ltaoo/wx_channels_download/blob/main/LICENSE)，包含收费提供基于其功能的产品或服务的限制。若复用其代码，必须保留对应的版权与许可声明；涉及收费产品或服务时，应按其许可取得授权。
 
-更新提示图标来自 [Icons8 New（iOS Glyph）](https://icons8.com/icon/61006/new)，使用与分发限制见 [NOTICE.md](NOTICE.md)。
+第三方图标与组件的来源及许可见 [NOTICE.md](NOTICE.md)。
