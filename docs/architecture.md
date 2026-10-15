@@ -137,7 +137,7 @@ npm run release:package
 
 发布沿用 `node scripts/build.mjs --release --component skill` 的产物，在临时副本的 YAML frontmatter 中派生 `slug`、`version` 和 `displayName`，不另维护源版本。SkillHub 不接受无扩展名的 `LICENSE`，该副本将其改名为 `LICENSE.txt` 并保留全文。CLI 固定版本及 SHA256，Actions 固定完整提交。仓库 Secret `SKILLHUB_KEY` 仅提供给正式发布步骤；Repository Variables `SKILLHUB_PUBLISHER` 和 `SKILLHUB_NAMESPACE` 分别核对令牌 handle 及目标命名空间。发布者和命名空间必须与平台已有条目一致。
 
-同一分支的运行串行执行。正式发布前确认待发布提交仍是 `main` HEAD，并核对公开条目的归属和版本；相同版本跳过，较新版本、身份不符或任何请求错误均停止，不覆盖、改名或自动重试。公开 404 不能排除安全扫描或审核中的提交，只允许原始 push 的首次运行交由发布接口判定；rerun 遇到 404 时停止，需维护者先在个人中心核实状态。只保存状态、条目 ID、平台返回的 URL 或 HTTP 状态与固定错误类别，不上传原始响应；`pending_review` 表示已提交审核，不代表公开。
+同一分支的运行串行执行。正式发布前确认待发布提交仍是 `main` HEAD，并核对公开条目的归属和版本；相同版本跳过，较新版本、身份不符或任何请求错误均停止，不覆盖、改名或自动重试。公开 404 不能排除安全扫描或审核中的提交，只允许原始 push 的首次运行交由发布接口判定；rerun 遇到 404 时停止，需维护者先在个人中心核实状态。只保存状态、条目 ID、平台返回的 URL 或 HTTP 状态与固定错误类别，不上传原始响应；`pending_review` 表示已提交审核，不代表公开。官方 CLI 收到 HTTP 2xx 后返回 0，若响应省略状态则记为 `submitted`，同样不代表审核通过。
 
 首次接入 SkillHub 或失败后需要人工补发当前版本时，可在 Actions 的 `SkillHub Release` 选择 `main` 手动运行。先在 SkillHub 个人中心核实当前版本没有待审或扫描记录，再启用 `confirm_no_pending_review`；该手动入口允许发布现有版本，仍执行完整预检、身份及目标检查，只接受当前 `main` HEAD。公开同版本仍跳过，手动运行的 rerun 遇到 404 仍停止；重新核实后台后应启动新的手动运行，不循环重放失败请求。手动 SkillHub 发布不创建 GitHub Release 或触发 Chrome Web Store 流程。
 

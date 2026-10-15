@@ -139,7 +139,7 @@ jobs:
           python3 "$cli" publish dist/skillhub/weixin-channels-video \
             --host "$SKILLHUB_HOST" --changelog "自动发布 ${GITHUB_SHA:0:12}" \
             --json > "$RUNNER_TEMP/skillhub-publish-raw.json" || publish_status=$?
-          python3 scripts/skillhub-release.py result < "$RUNNER_TEMP/skillhub-publish-raw.json" \
+          python3 scripts/skillhub-release.py result --exit-status "$publish_status" < "$RUNNER_TEMP/skillhub-publish-raw.json" \
             > "$RUNNER_TEMP/skillhub-result.json"
           cat "$RUNNER_TEMP/skillhub-result.json" >> "$GITHUB_STEP_SUMMARY"
           exit "$publish_status"
