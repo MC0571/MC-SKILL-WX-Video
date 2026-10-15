@@ -1,0 +1,145 @@
+name: SkillHub Release
+
+on:
+  pull_request:
+    paths:
+      - skills/weixin-channels-video/**
+      - src/**
+      - scripts/build.mjs
+      - scripts/skillhub-release.py
+      - tests/skillhub_release_test.py
+      - package.json
+      - package-lock.json
+      - LICENSE
+      - .github/workflows/skillhub-release.yml
+  push:
+    branches: [main]
+    paths:
+      - skills/weixin-channels-video/**
+      - src/**
+      - scripts/build.mjs
+      - scripts/skillhub-release.py
+      - tests/skillhub_release_test.py
+      - package.json
+      - package-lock.json
+      - LICENSE
+      - .github/workflows/skillhub-release.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skillhub-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SKILLHUB_HOST: https://api.skillhub.cn
+  SKILLHUB_CLI_URL: https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/releases/skillhub-cli-2026.8.5.tar.gz
+  SKILLHUB_CLI_SHA256: 3bbe2ba15ada2eb7a94a2b760fead83be5f4164ab28a6c8b0944dbc539f7e236
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      release_allowed: ${{ steps.plan.outputs.release_allowed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, pinned
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - run: python3 -m unittest discover -s tests -p skillhub_release_test.py
+      - name: Check Skill version increment
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/skillhub-release.py plan --base "$BASE_SHA" --target "$GITHUB_SHA"
+      - run: npm ci
+      - run: node --test --test-concurrency=1 tests/*.test.mjs
+      - run: node scripts/build.mjs --release --component skill
+      - run: (cd dist/release && sha256sum -c SHA256SUMS)
+      - run: node tests/skill-release-archive-smoke.mjs
+      - run: python3 scripts/skillhub-release.py bundle
+      - name: Install pinned SkillHub CLI
+        run: |
+          archive="$RUNNER_TEMP/skillhub-cli.tar.gz"
+          curl -fsSL "$SKILLHUB_CLI_URL" -o "$archive"
+          echo "$SKILLHUB_CLI_SHA256  $archive" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/skillhub-cli"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/skillhub-cli"
+      - name: SkillHub dry-run without credentials
+        run: |
+          python3 "$RUNNER_TEMP/skillhub-cli/cli/skills_store_cli.py" publish \
+            dist/skillhub/weixin-channels-video --host "$SKILLHUB_HOST" --dry-run --json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'push' && steps.plan.outputs.release_allowed == 'true'
+        with:
+          name: skillhub-bundle
+          path: dist/skillhub/weixin-channels-video
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.outputs.release_allowed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SKILL_VERSION: ${{ needs.checks.outputs.version }}
+      SKILLHUB_PUBLISHER: ${{ vars.SKILLHUB_PUBLISHER }}
+      SKILLHUB_NAMESPACE: ${{ vars.SKILLHUB_NAMESPACE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, pinned
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: skillhub-bundle
+          path: dist/skillhub/weixin-channels-video
+      - run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Install pinned SkillHub CLI
+        run: |
+          archive="$RUNNER_TEMP/skillhub-cli.tar.gz"
+          curl -fsSL "$SKILLHUB_CLI_URL" -o "$archive"
+          echo "$SKILLHUB_CLI_SHA256  $archive" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/skillhub-cli"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/skillhub-cli"
+      - name: Publish to Tencent SkillHub
+        env:
+          SKILLHUB_KEY: ${{ secrets.SKILLHUB_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SKILLHUB_KEY:?Configure the SKILLHUB_KEY repository secret}"
+          : "${SKILLHUB_PUBLISHER:?Configure the SKILLHUB_PUBLISHER repository variable}"
+          : "${SKILLHUB_NAMESPACE:?Configure the SKILLHUB_NAMESPACE repository variable}"
+          current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_main" != "$GITHUB_SHA" ]]; then
+            echo "::error::Queued commit is no longer main HEAD; no SkillHub submission was made"
+            exit 1
+          fi
+          cli="$RUNNER_TEMP/skillhub-cli/cli/skills_store_cli.py"
+          python3 "$cli" login --key "$SKILLHUB_KEY" --host "$SKILLHUB_HOST"
+          python3 "$cli" auth whoami --json | python3 scripts/skillhub-release.py identity
+          state="$(python3 scripts/skillhub-release.py target)"
+          if [[ "$state" == "skip" ]]; then
+            echo "SkillHub $SKILL_VERSION is already public; submission skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          publish_status=0
+          python3 "$cli" publish dist/skillhub/weixin-channels-video \
+            --host "$SKILLHUB_HOST" --changelog "自动发布 ${GITHUB_SHA:0:12}" \
+            --json > "$RUNNER_TEMP/skillhub-publish-raw.json" || publish_status=$?
+          python3 scripts/skillhub-release.py result < "$RUNNER_TEMP/skillhub-publish-raw.json" \
+            > "$RUNNER_TEMP/skillhub-result.json"
+          cat "$RUNNER_TEMP/skillhub-result.json" >> "$GITHUB_STEP_SUMMARY"
+          exit "$publish_status"
+      - name: Remove temporary credentials and raw response
+        if: always()
+        run: rm -f "$HOME/.skillhub/credentials.json" "$RUNNER_TEMP/skillhub-publish-raw.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: skillhub-result
+          path: ${{ runner.temp }}/skillhub-result.json
+          if-no-files-found: ignore

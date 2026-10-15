@@ -131,6 +131,14 @@ npm run release:package
 
 扩展 manifest 更新会触发扩展 GitHub Release，默认不送审；手动运行扩展 Release 时也默认不送审。只有在 main 手动启用 `submit_to_store`，GitHub Release 创建或校验成功后才获取 Google 令牌、上传并向 Chrome Web Store 送审。Skill 版本文件更新会单独打包并发布 Skill Release，不触发商店流程。Release 资产不可覆盖。商店拒绝或返回警告时工作流停止，由维护者检查后台后处理。GitHub 发布或送审不代表商店已经更新，实际商店版本以 Chrome 安装与桥接报告为准。
 
+### 腾讯 SkillHub 自动发布
+
+`.github/workflows/skillhub-release.yml` 仅发布 `skills/weixin-channels-video` 对应的独立构建包。PR 执行构建、归档验收和 SkillHub dry-run，不读取发布密钥；合入受保护的 `main` 后重新检查，分发输入有变化且 `version.json` 严格递增时自动提交，无逐次人工审批。版本使用稳定三段 SemVer，并遵守运行资源现有的单段 65535 上限。`skills/weixin-channels-video/**`、`src/**`、构建脚本、依赖清单及 LICENSE 作为分发输入保守检查；这些文件变化但没有升版会阻断该工作流。发布配置自身变化只验证，不回填历史版本。
+
+发布沿用 `node scripts/build.mjs --release --component skill` 的产物，在临时副本的 YAML frontmatter 中派生 `slug`、`version` 和 `displayName`，不另维护源版本。CLI 固定版本及 SHA256，Actions 固定完整提交。仓库 Secret `SKILLHUB_KEY` 仅提供给正式发布步骤；Repository Variables `SKILLHUB_PUBLISHER` 和 `SKILLHUB_NAMESPACE` 分别核对令牌 handle 及目标命名空间。发布者和命名空间必须与平台已有条目一致。
+
+同一分支的运行串行执行。正式发布前确认待发布提交仍是 `main` HEAD，并核对公开条目的归属和版本；相同版本跳过，较新版本、身份不符或任何请求错误均停止，不覆盖、改名或自动重试。公开 404 不能排除安全扫描或审核中的提交，只允许原始 push 的首次运行交由发布接口判定；rerun 遇到 404 时停止，需维护者先在个人中心核实状态。只保存状态、条目 ID、平台返回的 URL 或 HTTP 状态与固定错误类别，不上传原始响应；`pending_review` 表示已提交审核，不代表公开。
+
 已有扩展 GitHub Release 时，在 main 手动运行扩展 Release 并启用 `submit_existing_release`，仅校验当前 manifest 版本的正式 `extension-v…` Release 和扩展 ZIP、`SHA256SUMS` 均已存在，重新构建的资产必须与已发布资产逐字节相同。需要将该版本送审或重试送审时，必须同时启用 `submit_to_store`。这允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用 `submit_existing_release` 时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
 商店条目可从 README 的 [Chrome Web Store 安装入口](../README.md#chrome-扩展)打开。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。默认工作流成功仅表示 GitHub Release 完成；显式启用送审且 `submit` job 成功才表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。
