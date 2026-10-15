@@ -62,6 +62,9 @@ class SkillHubReleaseTest(unittest.TestCase):
                 self.assertEqual(frontmatter["description"], "描述：保留")
                 self.assertEqual(frontmatter["slug"], release.SKILL)
                 self.assertEqual(output.joinpath("scripts/cli.mjs").read_text(), "standalone")
+                self.assertEqual(output.joinpath("LICENSE.txt").read_text(), "standalone")
+                self.assertFalse(output.joinpath("LICENSE").exists())
+                self.assertEqual(source.joinpath("LICENSE").read_text(), "standalone")
                 self.assertEqual(source.joinpath("SKILL.md").read_text(), original)
                 source.joinpath("scripts/native-host.mjs").unlink()
                 with self.assertRaisesRegex(ValueError, "Incomplete"):
@@ -144,6 +147,16 @@ class SkillHubReleaseTest(unittest.TestCase):
                                               "error": "response included sensitive-marker", "body": {"private": "hidden"}})
         self.assertEqual(failure, {"status": "failed", "httpStatus": 409, "error": "conflict"})
         self.assertNotIn("sensitive-marker", json.dumps(failure))
+        for message, reason in (
+            ("不允许的文件类型: LICENSE", "unsupported_extensionless_license"),
+            ("不允许的文件类型: LICENSE sensitive-marker", None),
+        ):
+            result = release.publication_result({"success": False, "status": 400,
+                                                  "body": {"error": message}})
+            expected = {"status": "failed", "httpStatus": 400, "error": "http_error"}
+            if reason:
+                expected["reason"] = reason
+            self.assertEqual(result, expected)
         with self.assertRaises(ValueError):
             release.publication_result({"success": False, "status": "sensitive-marker"})
         with self.assertRaises(ValueError):
