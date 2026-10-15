@@ -85,7 +85,7 @@ class SkillHubReleaseTest(unittest.TestCase):
                 release.public_state(payload, publisher, namespace, version)
 
     def test_public_404_does_not_allow_blind_rerun(self):
-        with patch.dict(os.environ, SKILLHUB_PUBLISHER="publisher", SKILLHUB_NAMESPACE="indiv-mc"), \
+        with patch.dict(os.environ, SKILLHUB_PUBLISHER="publisher", SKILLHUB_NAMESPACE="indiv-mc", GITHUB_EVENT_NAME="push"), \
                 patch.object(release, "urlopen", side_effect=HTTPError("url", 404, "missing", {}, None)):
             with patch.dict(os.environ, GITHUB_RUN_ATTEMPT="1"):
                 self.assertEqual(release.check_target(), "publish")
@@ -95,6 +95,32 @@ class SkillHubReleaseTest(unittest.TestCase):
                 patch.object(release, "urlopen", side_effect=HTTPError("url", 403, "denied", {}, None)), \
                 self.assertRaises(HTTPError):
             release.check_target()
+
+    def test_manual_release_requires_main_and_a_fresh_pending_review_check(self):
+        for event, ref, confirmed, allowed in (
+            ("pull_request", "refs/pull/60/merge", "true", False),
+            ("push", "refs/heads/main", "", False),
+            ("workflow_dispatch", "refs/heads/feature", "true", None),
+            ("workflow_dispatch", "refs/heads/main", "false", None),
+            ("workflow_dispatch", "refs/heads/main", "true", True),
+        ):
+            with self.subTest(event=event, ref=ref, confirmed=confirmed), patch.dict(
+                os.environ, GITHUB_EVENT_NAME=event, GITHUB_REF=ref, CONFIRM_NO_PENDING_REVIEW=confirmed,
+            ):
+                if allowed is None:
+                    with self.assertRaises(ValueError):
+                        release.manual_release()
+                else:
+                    self.assertEqual(release.manual_release(), allowed)
+        with patch.object(release, "git", side_effect=['{"version":"0.2.4"}', '{"version":"0.2.4"}', ""]):
+            self.assertEqual(release.plan("a" * 40, "a" * 40, manual=True)["release_allowed"], "true")
+        with patch.dict(os.environ, GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/main",
+                        CONFIRM_NO_PENDING_REVIEW="true", GITHUB_RUN_ATTEMPT="1",
+                        SKILLHUB_PUBLISHER="publisher", SKILLHUB_NAMESPACE="indiv-mc"), \
+                patch.object(release, "urlopen", side_effect=HTTPError("url", 404, "missing", {}, None)):
+            self.assertEqual(release.check_target(), "publish")
+            with patch.dict(os.environ, GITHUB_RUN_ATTEMPT="2"), self.assertRaises(ValueError):
+                release.check_target()
 
     def test_workflow_keeps_credentials_out_of_pr_checks(self):
         workflow = yaml.load((ROOT / ".github/workflows/skillhub-release.yml").read_text(), Loader=yaml.BaseLoader)

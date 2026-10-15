@@ -139,6 +139,8 @@ npm run release:package
 
 同一分支的运行串行执行。正式发布前确认待发布提交仍是 `main` HEAD，并核对公开条目的归属和版本；相同版本跳过，较新版本、身份不符或任何请求错误均停止，不覆盖、改名或自动重试。公开 404 不能排除安全扫描或审核中的提交，只允许原始 push 的首次运行交由发布接口判定；rerun 遇到 404 时停止，需维护者先在个人中心核实状态。只保存状态、条目 ID、平台返回的 URL 或 HTTP 状态与固定错误类别，不上传原始响应；`pending_review` 表示已提交审核，不代表公开。
 
+首次接入 SkillHub 或失败后需要人工补发当前版本时，可在 Actions 的 `SkillHub Release` 选择 `main` 手动运行。先在 SkillHub 个人中心核实当前版本没有待审或扫描记录，再启用 `confirm_no_pending_review`；该手动入口允许发布现有版本，仍执行完整预检、身份及目标检查，只接受当前 `main` HEAD。公开同版本仍跳过，手动运行的 rerun 遇到 404 仍停止；重新核实后台后应启动新的手动运行，不循环重放失败请求。手动 SkillHub 发布不创建 GitHub Release 或触发 Chrome Web Store 流程。
+
 已有扩展 GitHub Release 时，在 main 手动运行扩展 Release 并启用 `submit_existing_release`，仅校验当前 manifest 版本的正式 `extension-v…` Release 和扩展 ZIP、`SHA256SUMS` 均已存在，重新构建的资产必须与已发布资产逐字节相同。需要将该版本送审或重试送审时，必须同时启用 `submit_to_store`。这允许维护提交脚本后重试旧版本，不移动 tag、创建 Release 或补传资产。未启用 `submit_existing_release` 时仍要求 tag 与工作流提交一致。Google API 错误只记录经过清理的校验说明和已知错误详情，不记录令牌或完整响应。
 
 商店条目可从 README 的 [Chrome Web Store 安装入口](../README.md#chrome-扩展)打开。首次条目、截图、隐私与权限披露、测试说明及必要法律确认在商店后台完成；后续版本由 API 更新。默认工作流成功仅表示 GitHub Release 完成；显式启用送审且 `submit` job 成功才表示已送审或已有有效发布状态，实际上线仍以商店审核结果为准。发布期间避免在后台手动上传包。

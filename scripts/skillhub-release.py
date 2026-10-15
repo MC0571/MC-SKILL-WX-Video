@@ -33,7 +33,7 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def plan(base, target):
+def plan(base, target, manual=False):
     for ref in (base, target):
         if not re.fullmatch(r"[0-9a-f]{40}", ref) or ref == "0" * 40:
             raise ValueError("An existing base and target commit are required")
@@ -41,9 +41,17 @@ def plan(base, target):
     previous = json.loads(git("show", f"{base}:{VERSION_FILE}"))["version"]
     current_tuple, previous_tuple = version_tuple(current), version_tuple(previous)
     changed = bool(git("diff", "--name-only", base, target, "--", *DISTRIBUTION_PATHS))
-    if changed and current_tuple <= previous_tuple:
+    if not manual and changed and current_tuple <= previous_tuple:
         raise ValueError("Skill distribution inputs changed; increment version.json before merging")
-    return {"version": current, "release_allowed": str(changed).lower()}
+    return {"version": current, "release_allowed": str(manual or changed).lower()}
+
+
+def manual_release():
+    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        return False
+    if os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("CONFIRM_NO_PENDING_REVIEW") != "true":
+        raise ValueError("Manual release requires main and confirmation of no pending submission")
+    return True
 
 
 def bundle():
@@ -111,7 +119,9 @@ def check_target():
         if error.code != 404:
             raise
         # Public 404 cannot reveal pending review; never blindly replay a failed submission.
-        if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+        if os.environ.get("GITHUB_RUN_ATTEMPT") != "1" or not (
+            os.environ.get("GITHUB_EVENT_NAME") == "push" or manual_release()
+        ):
             raise ValueError("SkillHub status is not public; check pending submissions before retrying") from None
         return "publish"
     return public_state(payload, publisher, namespace, os.environ["SKILL_VERSION"])
@@ -138,7 +148,7 @@ def main():
     parser.add_argument("--target")
     args = parser.parse_args()
     if args.command == "plan":
-        result = plan(args.base or "", args.target or "")
+        result = plan(args.base or "", args.target or "", manual=manual_release())
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write("".join(f"{key}={value}\n" for key, value in result.items()))
         print(json.dumps(result))

@@ -1,6 +1,13 @@
 name: SkillHub Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      confirm_no_pending_review:
+        description: 已在 SkillHub 后台确认当前版本没有待审核或扫描记录
+        required: true
+        type: boolean
+        default: false
   pull_request:
     paths:
       - skills/weixin-channels-video/**
@@ -56,7 +63,8 @@ jobs:
       - name: Check Skill version increment
         id: plan
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          CONFIRM_NO_PENDING_REVIEW: ${{ inputs.confirm_no_pending_review }}
         run: python3 scripts/skillhub-release.py plan --base "$BASE_SHA" --target "$GITHUB_SHA"
       - run: npm ci
       - run: node --test --test-concurrency=1 tests/*.test.mjs
@@ -76,7 +84,7 @@ jobs:
           python3 "$RUNNER_TEMP/skillhub-cli/cli/skills_store_cli.py" publish \
             dist/skillhub/weixin-channels-video --host "$SKILLHUB_HOST" --dry-run --json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: github.event_name == 'push' && steps.plan.outputs.release_allowed == 'true'
+        if: github.event_name != 'pull_request' && steps.plan.outputs.release_allowed == 'true'
         with:
           name: skillhub-bundle
           path: dist/skillhub/weixin-channels-video
@@ -85,12 +93,13 @@ jobs:
 
   publish:
     needs: checks
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.outputs.release_allowed == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.checks.outputs.release_allowed == 'true'
     runs-on: ubuntu-latest
     env:
       SKILL_VERSION: ${{ needs.checks.outputs.version }}
       SKILLHUB_PUBLISHER: ${{ vars.SKILLHUB_PUBLISHER }}
       SKILLHUB_NAMESPACE: ${{ vars.SKILLHUB_NAMESPACE }}
+      CONFIRM_NO_PENDING_REVIEW: ${{ inputs.confirm_no_pending_review }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, pinned
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
