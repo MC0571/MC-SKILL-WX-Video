@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "视频号分享链接解析",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "零隐私风险的视频号本地解析器，为内容创作者与 AI 自动化工作流打造。",
   "icons": {
     "16": "icons/icon16.png",
