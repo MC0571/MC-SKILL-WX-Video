@@ -129,7 +129,7 @@ def check_target():
     return public_state(payload, publisher, namespace, os.environ["SKILL_VERSION"])
 
 
-def publication_result(payload):
+def publication_result(payload, cli_exit_status=None):
     if payload.get("success") is False:
         status = payload.get("status")
         if type(status) is not int or not 400 <= status <= 599:
@@ -143,7 +143,10 @@ def publication_result(payload):
         return result
     result = {key: payload[key] for key in ("skillId", "status", "publicUrl") if key in payload}
     if not isinstance(result.get("status"), str):
-        raise ValueError("SkillHub did not return a publication status; check dashboard before retrying")
+        # The official CLI exits zero only after HTTP 2xx; some accepted responses omit status.
+        if cli_exit_status != 0:
+            raise ValueError("SkillHub did not return a publication status; check dashboard before retrying")
+        result["status"] = "submitted"
     return result
 
 
@@ -152,6 +155,7 @@ def main():
     parser.add_argument("command", choices=["plan", "bundle", "identity", "target", "result"])
     parser.add_argument("--base")
     parser.add_argument("--target")
+    parser.add_argument("--exit-status", type=int)
     args = parser.parse_args()
     if args.command == "plan":
         result = plan(args.base or "", args.target or "", manual=manual_release())
@@ -165,7 +169,7 @@ def main():
     elif args.command == "target":
         print(check_target())
     elif args.command == "result":
-        print(json.dumps(publication_result(json.load(sys.stdin)), ensure_ascii=False))
+        print(json.dumps(publication_result(json.load(sys.stdin), args.exit_status), ensure_ascii=False))
 
 
 if __name__ == "__main__":

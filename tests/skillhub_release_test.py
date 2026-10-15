@@ -162,6 +162,15 @@ class SkillHubReleaseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.publication_result({"success": True})
 
+    def test_accepted_response_without_status_uses_the_cli_http_result(self):
+        payload = {"slug": release.SKILL, "version": "0.2.4", "private": "sensitive-marker"}
+        self.assertEqual(release.publication_result(payload, cli_exit_status=0), {"status": "submitted"})
+        for exit_status in (None, 1):
+            with self.subTest(exit_status=exit_status), self.assertRaises(ValueError):
+                release.publication_result(payload, cli_exit_status=exit_status)
+        self.assertEqual(release.publication_result({"success": False, "status": 400}, cli_exit_status=1),
+                         {"status": "failed", "httpStatus": 400, "error": "http_error"})
+
 
 if __name__ == "__main__":
     unittest.main()
