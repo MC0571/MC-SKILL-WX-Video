@@ -16,6 +16,6 @@
 
 ## UI 组件
 
-更新提示中内嵌的 PNG 来自 [Icons8 的 New 图标（iOS Glyph，ID 61006）](https://icons8.com/icon/61006/new)，使用官方提供的免费 60×60 PNG，颜色为 `FA5252`。该图标遵循 [Icons8 许可](https://icons8.com/license)，不适用本项目源码的 Apache 2.0 许可；扩展页面底部及 Agent 设置保留可点击的 Icons8 来源署名。完整许可随扩展保存在 `icons/Icons8-LICENSE.txt`。图标仅作为应用界面的一部分提供，不得从源码或安装包中提取并作为独立素材分发；本项目的 Apache 2.0 许可不授予 Icons8 素材的独立使用或分发权。
+更新提示中内嵌的 PNG 来自 [Icons8 的 New 图标（iOS Glyph，ID 61006）](https://icons8.com/icon/61006/new)，使用官方提供的免费 60×60 PNG，颜色为 `FA5252`。该图标遵循 [Icons8 许可](https://icons8.com/license)，不适用本项目源码的 Apache 2.0 许可。完整许可随扩展保存在 `icons/Icons8-LICENSE.txt`。图标仅作为应用界面的一部分提供，不得从源码或安装包中提取并作为独立素材分发；本项目的 Apache 2.0 许可不授予 Icons8 素材的独立使用或分发权。
 
 下载记录的日期筛选和排序使用 [Shoelace](https://shoelace.style/) 2.20.1，采用 MIT 许可。本地构建包含组件及其依赖，不从 CDN 加载。扩展构建目录中的 `THIRD_PARTY_LICENSES.txt` 保留所用第三方包的完整版权与许可声明。

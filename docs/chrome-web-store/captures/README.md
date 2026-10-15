@@ -4,7 +4,7 @@
 
 The fixture does not sign in, read a browser profile, contact the upstream parser, invoke Native Messaging, or download files. `?capture=empty` shows the parsed result without recent records, the default mode shows one recent record, and `?capture=history` shows seven synthetic history records.
 
-`agent.jpg` shows the actual **Agent 设置** popover with its ordinary **复制提示词** button and Icons8 credit visible. Its instance UUID and extension ID are synthetic. No connection or login snapshot is supplied, so the UI reports an unknown connection state; the screenshot does not claim a successful connection or login, and the copy action is not triggered.
+`agent.jpg` shows the actual **Agent 设置** popover with its ordinary **复制提示词** button. Its instance UUID and extension ID are synthetic. No connection or login snapshot is supplied, so the UI reports an unknown connection state; the screenshot does not claim a successful connection or login, and the copy action is not triggered.
 
 ## Reproduce
 
@@ -44,7 +44,7 @@ capture_extension=/Volumes/2T/.codex/tmp/store-capture-025/extension
 /Volumes/2T/.codex/bin/external-dev python3 -m http.server 4173 --bind 127.0.0.1 --directory "$capture_extension"
 ```
 
-Open `http://127.0.0.1:4173/index.html?capture=empty` in a local browser and enter `https://weixin.qq.com/sph/demo-capture-025` to show the result. Open `http://127.0.0.1:4173/index.html?capture=history` and choose **查看全部** for the history view. These screenshots were captured from the browser's 1280×1000 viewport using CUA `getScreenshot()` and saved with `node:fs/promises.writeFile`.
+Open `http://127.0.0.1:4173/index.html?capture=empty` in a local browser and enter `https://weixin.qq.com/sph/demo-capture-025` to show the result. Open `http://127.0.0.1:4173/index.html?capture=history` and choose **查看全部** for the history view. These screenshots were captured from the browser's 1280×1000 viewport using CUA's browser CDP `Page.captureScreenshot` and saved with `node:fs/promises.writeFile`.
 
 To reproduce `agent.jpg`, open the `?capture=empty` page, leave the input empty, and open **Agent 设置** without clicking **复制提示词**.
 
