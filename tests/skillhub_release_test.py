@@ -114,8 +114,12 @@ class SkillHubReleaseTest(unittest.TestCase):
     def test_only_safe_publication_fields_are_saved(self):
         self.assertEqual(release.publication_result({"skillId": 1, "status": "pending_review", "token": "hidden"}),
                          {"skillId": 1, "status": "pending_review"})
-        self.assertEqual(release.publication_result({"success": False, "status": 409, "error": "version conflict", "body": {"private": "hidden"}}),
-                         {"status": "failed", "httpStatus": 409, "error": "version conflict"})
+        failure = release.publication_result({"success": False, "status": 409,
+                                              "error": "response included sensitive-marker", "body": {"private": "hidden"}})
+        self.assertEqual(failure, {"status": "failed", "httpStatus": 409, "error": "conflict"})
+        self.assertNotIn("sensitive-marker", json.dumps(failure))
+        with self.assertRaises(ValueError):
+            release.publication_result({"success": False, "status": "sensitive-marker"})
         with self.assertRaises(ValueError):
             release.publication_result({"success": True})
 

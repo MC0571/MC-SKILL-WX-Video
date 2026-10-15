@@ -119,7 +119,12 @@ def check_target():
 
 def publication_result(payload):
     if payload.get("success") is False:
-        return {"status": "failed", "httpStatus": payload.get("status"), "error": payload.get("error")}
+        status = payload.get("status")
+        if type(status) is not int or not 400 <= status <= 599:
+            raise ValueError("SkillHub returned an invalid HTTP error status")
+        category = {401: "authentication_failed", 403: "permission_denied",
+                    409: "conflict", 429: "rate_limited"}.get(status, "http_error")
+        return {"status": "failed", "httpStatus": status, "error": category}
     result = {key: payload[key] for key in ("skillId", "status", "publicUrl") if key in payload}
     if not isinstance(result.get("status"), str):
         raise ValueError("SkillHub did not return a publication status; check dashboard before retrying")
