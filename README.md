@@ -2,7 +2,7 @@
 
 把 `https://weixin.qq.com/sph/...` 视频号分享链接粘贴到 Chrome 扩展，预览视频、查看标题与作者，再选择接口提供的视频版本下载。也可以让 AI 通过 Skill 完成同样的操作。
 
-![扩展页面](docs/images/extension.jpg)
+![扩展解析与预览页面（示例数据）](docs/chrome-web-store/captures/preview.jpg)
 
 ## 选择使用方式
 
